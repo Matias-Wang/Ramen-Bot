@@ -1,0 +1,44 @@
+[
+  {
+    "id": "r001",
+    "name": "極濃豚骨一番",
+    "location": "南港",
+    "address": "台北市南港區經貿二路 XXX 號",
+    "style": "豚骨",
+    "richness": "極濃郁",
+    "price_range": "250-350",
+    "rating": 4.7,
+    "features": ["叉燒大片", "可免費加麵", "排隊名店"],
+    "description": "這家店以熬煮 18 小時的京都風豚骨湯頭聞名，口感像奶油般滑順，推薦給喜歡重口味的拉麵愛好者。",
+    "map_url": "https://maps.app.goo.gl/xxxx",
+    "image_url": "https://example.com/ramen001.jpg"
+  },
+  {
+    "id": "r002",
+    "name": "清流雞白湯研所",
+    "location": "中山",
+    "address": "台北市中山區中山北路 XXX 巷",
+    "style": "雞白湯",
+    "richness": "清爽",
+    "price_range": "220-300",
+    "rating": 4.5,
+    "features": ["舒肥雞肉", "柚子胡椒", "女性熱門"],
+    "description": "湯頭清澈見底卻富有層次感，淡淡的柚子香氣能解除湯頭的油膩感，非常適合午餐享用。",
+    "map_url": "https://maps.app.goo.gl/yyyy",
+    "image_url": "https://example.com/ramen002.jpg"
+  },
+  {
+    "id": "r003",
+    "name": "南港鹽味職人",
+    "location": "南港",
+    "address": "台北市南港區興華路 XXX 號",
+    "style": "鹽味",
+    "richness": "適中",
+    "price_range": "200-280",
+    "rating": 4.2,
+    "features": ["手工細麵", "全麥麵粉", "捷運站旁"],
+    "description": "使用三種不同產地的海鹽調配而成，能帶出湯頭最純粹的鮮甜感，是南港展覽館附近的上班族首選。",
+    "map_url": "https://maps.app.goo.gl/zzzz",
+    "image_url": "https://example.com/ramen003.jpg"
+  }
+]
