@@ -8,7 +8,6 @@ LINE_TAG = 0
 import os
 import json
 import re
-
 import google.generativeai as genai
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -18,7 +17,7 @@ from dotenv import load_dotenv
 
 # === external helpers ===
 from processor import filter_ramen_data  # 依賴本地資料庫查詢邏輯
-
+from flex_handler import assemble_carousel  # 依賴 Flex Message 組裝邏輯
 # prompt text for Gemini
 from prompts import SYSTEM_INSTRUCTION, RECOMMEND_PROMPT_TEMPLATE
 
@@ -30,11 +29,9 @@ CYAN = '\033[96m'
 MAGAENTA = '\033[95m'
 RESET = '\033[0m'
 
-
-
-
 # === configuration / constants ===
-load_dotenv()  # 載入 .env
+load_dotenv()  # 載入 .env 中的環境變數
+
 
 app = Flask(__name__)
 # LINE 設定，可於 .env 或環境變數中修改
@@ -65,6 +62,9 @@ model = genai.GenerativeModel(
 #     {"name": "拉麵店A", "location": "南港", "style": "豚骨", "address": "XX路123號"},
 #     {"name": "拉麵店B", "location": "信義", "style": "魚介", "address": "YY街45號"},
 # ]
+
+
+
 
 def _extract_text(obj):
     """從 Gemini 回傳物件中取出最有可能的文字欄位。
@@ -218,32 +218,38 @@ def handle_message(event):
         stage = 'assemble_reply'
         log_debug(f"stage={stage}")
         ui_tag = intent.get('ui_tag') if isinstance(intent, dict) else None
-        if ui_tag and str(ui_tag).upper() == 'CAROUSEL':
-            # 準備 Carousel Flex message
-            bubbles = []
-            for shop in results[:5]:
-                title = shop.get('name') or shop.get('shop') or '不明店名'
-                loc = shop.get('location') or '不明地區'
-                style = shop.get('style') or '不明口味'
-                addr = shop.get('address') or ''
-                body_lines = f"{loc} / {style}\n{addr}"
-                if recommendation:
-                    body_lines += f"\n{recommendation}"
-                bubble = {
-                    "type": "bubble",
-                    "body": {
-                        "type": "box",
-                        "layout": "vertical",
-                        "contents": [
-                            {"type": "text", "text": title, "weight": "bold", "size": "md"},
-                            {"type": "text", "text": body_lines, "wrap": True, "size": "sm"}
-                        ]
-                    }
-                }
-                bubbles.append(bubble)
+        # if ui_tag and str(ui_tag).upper() == 'CAROUSEL':
+        #     # 準備 Carousel Flex message
+        #     bubbles = []
+        #     for shop in results[:5]:
+        #         title = shop.get('name') or shop.get('shop') or '不明店名'
+        #         loc = shop.get('location') or '不明地區'
+        #         style = shop.get('style') or '不明口味'
+        #         addr = shop.get('address') or ''
+        #         body_lines = f"{loc} / {style}\n{addr}"
+        #         if recommendation:
+        #             body_lines += f"\n{recommendation}"
+        #         bubble = {
+        #             "type": "bubble",
+        #             "body": {
+        #                 "type": "box",
+        #                 "layout": "vertical",
+        #                 "contents": [
+        #                     {"type": "text", "text": title, "weight": "bold", "size": "md"},
+        #                     {"type": "text", "text": body_lines, "wrap": True, "size": "sm"}
+        #                 ]
+        #             }
+        #         }
+            #     bubbles.append(bubble)
 
-            flex = FlexSendMessage(alt_text='拉麵推薦', contents={"type": "carousel", "contents": bubbles})
+            # flex = FlexSendMessage(alt_text='拉麵推薦', contents={"type": "carousel", "contents": bubbles})
+            # line_bot_api.reply_message(event.reply_token, flex)
+
+        if ui_tag and str(ui_tag).upper() == 'CAROUSEL':
+            carousel_contents = assemble_carousel(results, recommendation)
+            flex = FlexSendMessage(alt_text='拉麵推薦', contents=carousel_contents)
             line_bot_api.reply_message(event.reply_token, flex)
+
         else: # ui_tag 不明或非 CAROUSEL，預設回覆純文字列表
             # 預設純文字回覆
             items = []

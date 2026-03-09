@@ -1,5 +1,5 @@
 .venv/
 __pycache__/
 error.log/
-.env/
+.env
 error.log
