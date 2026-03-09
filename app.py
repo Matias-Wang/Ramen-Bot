@@ -66,7 +66,7 @@ model = genai.GenerativeModel(
 
 
 
-def _extract_text(obj):
+def extract_text(obj):
     """從 Gemini 回傳物件中取出最有可能的文字欄位。
     
     generate_content() 回傳的是 GenerateContentResponse 物件，
@@ -89,14 +89,14 @@ def parse_intent(response):
     
     參數 response：
         - 來自 model.generate_content(user_text) 的 GenerateContentResponse 物件
-        - 本函式使用 _extract_text() 從中抽取文字，預期取得 JSON 字串
+        - 本函式使用 extract_text() 從中抽取文字，預期取得 JSON 字串
     
     例外：若找不到 JSON 或解析失敗會拋出 ValueError。
     
     範例回傳：
         {"intent": "search", "location": "台北", "style": "鹽味", "ui_tag": "TEXT"}
     """
-    raw = _extract_text(response)
+    raw = extract_text(response)
     raw = re.sub(r'```(?:json)?', '', str(raw))  # 去掉 ``` 代碼區
     m = re.search(r'(\{.*\})', raw, re.S)
     if not m:
@@ -115,7 +115,7 @@ def generate_recommendation(shops):
         1. 將 shops 轉成 JSON 字串（shops_preview）
         2. 使用 RECOMMEND_PROMPT_TEMPLATE 組出提示詞
         3. 呼叫 model.generate_content(prompt) 取得 GenerateContentResponse
-        4. 用 _extract_text() 抽出文字，移除 markdown fence，並 strip()
+        4. 用 extract_text() 抽出文字，移除 markdown fence，並 strip()
     
     回傳：
         推薦文字串，例如「此店豚骨湯頭濃郁，叉燒軟嫩多汁」
@@ -139,7 +139,7 @@ def generate_recommendation(shops):
         # tools=None,
         # tool_config=None
     )
-    rec_text = _extract_text(rec_resp)
+    rec_text = extract_text(rec_resp)
     return re.sub(r'```(?:json)?', '', str(rec_text)).strip()
 
 

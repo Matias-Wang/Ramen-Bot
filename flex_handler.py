@@ -103,26 +103,23 @@ def assemble_carousel(results, recommendation=None):
     }
 
 # === 4. FM 輔助函式 (Low-level) ===
-def get_flex_bubble(shop, recommendation=None):
-    """將單店資料填入 FM 變數模板並處理資料替換"""
-    name = shop.get('name') or shop.get('shop') or '未知店名'
-    location = shop.get('location') or '未知地區'
-    style = shop.get('style') or '未知口味'
-    address = shop.get('address') or '暫無地址'
-    
-    # 預防 AI 生成失敗時的顯示
-    rec_text = recommendation if recommendation else "點擊查看地圖了解更多。"
-
-    # 執行字串替換
-    temp_str = FM_TEMPLATE
-    temp_str = temp_str.replace("{SHOP_NAME}", name)
-    temp_str = temp_str.replace("{LOCATION}", location)
-    temp_str = temp_str.replace("{STYLE}", style)
-    temp_str = temp_str.replace("{ADDRESS}", address)
-    temp_str = temp_str.replace("{AI_RECOMMENDATION}", rec_text)
-
+def get_flex_bubble(shop, recommendation = None):
     try:
-        return json.loads(temp_str)
+        # 將模板轉為字典操作
+        bubble = json.loads(FM_TEMPLATE)
+        
+        # 安全填充資料
+        name = shop.get('name') or '未知店名'
+        bubble['body']['contents'][0]['text'] = name    # 店名
+        bubble['body']['contents'][1]['text'] = f"{shop.get('location')} · {shop.get('style')}"    # 地區與口味
+        bubble['body']['contents'][2]['text'] = shop.get('address', '暫無地址')    # 地址
+        bubble['body']['contents'][4]['text'] = recommendation or "點擊查看地圖了解更多。"    # AI 推薦
+        
+        # 填充按鈕連結
+        bubble['footer']['contents'][0]['action']['uri'] = f"https://www.google.com"
+        # bubble['footer']['contents'][0]['action']['uri'] = f"https://www.google.com/maps/search/?api=1&query={name}"
+        
+        return bubble
     except Exception as e:
-        print(f"Flex JSON 解析失敗: {e}")
+        print(f"FM 組裝失敗: {e}")
         return None
