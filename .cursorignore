@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+error.log/
+.env
+error.log
+app_robot_test.py
+requirements.txt
