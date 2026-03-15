@@ -1,4 +1,3 @@
-
 # === 在檔案頂部定義開關 ===
 # LINE_TAG = 1: 正式模式 (LINE + ngrok)
 # LINE_TAG = 0: 地端測試模式 (終端機輸出)
@@ -8,6 +7,7 @@ LINE_TAG = 0
 import os
 import json
 import re
+import asyncio
 import google.generativeai as genai
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from processor import filter_ramen_data  # 依賴本地資料庫查詢邏輯
 from flex_handler import assemble_carousel  # 依賴 Flex Message 組裝邏輯
 # prompt text for Gemini
-from prompts import SYSTEM_INSTRUCTION, RECOMMEND_PROMPT_TEMPLATE
+from prompts import IDENTIFY_INSTRUCTION_PROMPT, RECOMMEND_PROMPT
 
 RED = '\033[91m'
 YELLOW = '\033[93m'
@@ -41,58 +41,43 @@ handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
 # Gemini / Google API 設定
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 
-# 建立 Gemini 模型實例，若需調整可在此修改
-model = genai.GenerativeModel(
-    model_name="gemini-3-flash-preview",
-    system_instruction=SYSTEM_INSTRUCTION
+# 建立 Gemini 模型實例；
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL")
+identify_model = genai.GenerativeModel(
+    model_name = GEMINI_MODEL_NAME,
+    system_instruction = IDENTIFY_INSTRUCTION_PROMPT
 )
+# 推薦文專用模型（不帶意圖解析的 IDENTIFY_INSTRUCTION_PROMPT，避免輸出格式錯亂）
+recommend_model = genai.GenerativeModel(model_name = GEMINI_MODEL_NAME)
 
-# === helper functions ===
-#
-# Example of intent dict produced by Gemini:
-# {
-#     "intent": "search",
-#     "location": "南港",
-#     "style": "豚骨",
-#     "ui_tag": "CAROUSEL"  # or "TEXT"
-# }
-#
-# Example of results list (returned by filter_ramen_data):
-# [
-#     {"name": "拉麵店A", "location": "南港", "style": "豚骨", "address": "XX路123號"},
-#     {"name": "拉麵店B", "location": "信義", "style": "魚介", "address": "YY街45號"},
-# ]
-
-
-
-
-def extract_text(obj):
-    """從 Gemini 回傳物件中取出最有可能的文字欄位。
-    
+# ===========================================================================
+# 通用函數
+# ===========================================================================
+def extract_text(obj):    # 從 Gemini 回傳物件抽出文字
+    """
+    從 Gemini 回傳物件中取出最有可能的文字欄位。
     generate_content() 回傳的是 GenerateContentResponse 物件，
     可能包含以下屬性（優先順序）：
       - obj.text: 主要輸出文字（最常見）
       - obj.output: 備選輸出欄位
       - obj.content: 內容物件
       - obj.candidates: 候選回應列表
-    
     若上述都沒有，則轉換為 str()。
     """
     for attr in ('text', 'output', 'content', 'candidates'):
         if hasattr(obj, attr):
             return getattr(obj, attr)
+    print(f"{YELLOW}extract_text() 回傳: {obj}{RESET}")
     return str(obj)
 
-
-def parse_intent(response):
-    """解析 Gemini 的回應並回傳 dict 形式的 intent。
-    
+def parse_intent(response):    # 解析 Gemini 的回傳物件，回傳 dict 形式的 intent
+    """
+    解析 Gemini 的回應並回傳 dict 形式的 intent。
     參數 response：
         - 來自 model.generate_content(user_text) 的 GenerateContentResponse 物件
         - 本函式使用 extract_text() 從中抽取文字，預期取得 JSON 字串
     
     例外：若找不到 JSON 或解析失敗會拋出 ValueError。
-    
     範例回傳：
         {"intent": "search", "location": "台北", "style": "鹽味", "ui_tag": "TEXT"}
     """
@@ -103,47 +88,89 @@ def parse_intent(response):
         raise ValueError('無法從回應抽出 JSON')
     return json.loads(m.group(1).replace("'", '"'))
 
+def build_shop_summary(shop: dict) -> str:
+    """將單一店家 dict 組成一筆易讀的中文描述（供推薦 LLM 使用）。"""
+    name = shop.get("name") or "未知店名"
+    loc = shop.get("location") or ""
+    style = shop.get("style") or ""
+    desc = shop.get("description") or ""
+    features = shop.get("features") or []
+    feature_text = "、".join(features[:4]) if isinstance(features, list) else ""
+    parts = [name, f"位於{loc}" if loc else "", f"風格：{style}" if style else ""]
+    summary = "，".join(p for p in parts if p)
+    if feature_text:
+        summary += f"；特色：{feature_text}"
+    if desc:
+        summary += f"。簡介：{desc}"
+    return summary
 
-def generate_recommendation(shops):
-    """呼叫 Gemini 產生簡短的推薦文，最多前 5 間店。
-    
-    參數 shops：
-        - list[dict]，來自 filter_ramen_data() 的篩選結果
-        - 會將前 5 間店轉為 JSON 並組入 prompt
-    
-    流程：
-        1. 將 shops 轉成 JSON 字串（shops_preview）
-        2. 使用 RECOMMEND_PROMPT_TEMPLATE 組出提示詞
-        3. 呼叫 model.generate_content(prompt) 取得 GenerateContentResponse
-        4. 用 extract_text() 抽出文字，移除 markdown fence，並 strip()
-    
-    回傳：
-        推薦文字串，例如「此店豚骨湯頭濃郁，叉燒軟嫩多汁」
-    """
-    shops_preview = json.dumps(shops[:5], ensure_ascii=False)
-    prompt = RECOMMEND_PROMPT_TEMPLATE.format(shops_preview=shops_preview)
-    rec_resp = model.generate_content(
-        prompt,
-        generation_config={
-                "temperature": 0.7,
-                "max_output_tokens": 200,
+
+def get_one_recommendation(shop_summary: str) -> str:
+    """針對一間店的描述呼叫推薦 LLM（同步），回傳一句推薦文。失敗則回傳預設句。"""
+    default = "點擊查看地圖了解更多。"
+    try:
+        # prompt = RECOMMEND_PROMPT.replace("{shop_summary}", shop_summary)
+        prompt = RECOMMEND_PROMPT.format(shop_summary = shop_summary)
+        print(f"{YELLOW}prompt: {prompt}{RESET}")
+        recommend_result = recommend_model.generate_content(
+            prompt,
+            generation_config={
+                "temperature": 0.6,
+                "max_output_tokens": 1200,
                 "top_p": 0.85,
-                "top_k": 10
-            }
-        # temperature=0.7,
-        # max_output_tokens=200,
-        # top_k = 10,
-        # top_p = 0.85,
-        # # safety_settings=
-        # stream=False,
-        # tools=None,
-        # tool_config=None
-    )
-    rec_text = extract_text(rec_resp)
-    return re.sub(r'```(?:json)?', '', str(rec_text)).strip()
+                "top_k": 10,
+            },
+        )
+        # print(f"{YELLOW}Gemini recommendation raw response: {recommend_result.candidates[0].content.parts[0].text}{RESET}")
+        print(f"{YELLOW}Gemini recommendation raw response: {recommend_result}{RESET}")
+        raw = extract_text(recommend_result).strip()
+        raw = re.sub(r"```\w*\s*", "", raw).strip()
+        if not raw or any(c in raw for c in "I will"):
+            return default
+        return raw
+    except Exception:
+        return default
+
+async def get_one_recommendation_async(shop_summary: str) -> str:
+    """非同步包裝：在執行緒中呼叫同步 Gemini API，不阻塞 event loop。"""
+    return await asyncio.to_thread(get_one_recommendation, shop_summary)
 
 
+async def fetch_all_recommendations_async(summaries: list[str]) -> list[str]:
+    """並行呼叫推薦 LLM（async/await + gather）；單一失敗不影響其他，該格回傳預設句。"""
+    default = "點擊查看地圖了解更多。"
+    tasks = [get_one_recommendation_async(s) for s in summaries]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    out: list[str] = []
+    for i, r in enumerate[str | BaseException](results):
+        if isinstance(r, Exception):
+            print(f"{RED}recommendation[{i}] error: {r}{RESET}")
+            out.append(default)
+        else:
+            out.append(r)
+    return out
 
+def generate_recommendation(shops_info: list[dict], num_shops: int = 5) -> list[str] | None:
+    """依店家列表產生「每間店一筆」推薦文，以 async/await 並行呼叫 LLM，回傳與店家順序對應的 list[str]。"""
+    if not shops_info:
+        return None
+    selected = shops_info[:num_shops]
+    summaries: list[str] = [build_shop_summary(content) for content in selected]
+    print(f"{YELLOW}shop_summaries (共 {len(summaries)} 筆):{RESET}")
+    for i, s in enumerate(summaries):
+        print(f"  [{i}] {s[:80]}...")
+    try:
+        recommendations = asyncio.run(fetch_all_recommendations_async(summaries))
+    except Exception as e:
+        print(f"{RED}fetch recommendations error: {e}{RESET}")
+        recommendations = ["點擊查看地圖了解更多。"] * len(summaries)
+    print(f"{YELLOW}recommendations: {recommendations}{RESET}")
+    return recommendations
+
+
+# ===========================================================================
+# LINE 相關函數
+# ===========================================================================
 
 # === webhook / request handlers ===
 # LINE webhook 入口，驗證簽章後轉交給 handler
@@ -157,7 +184,6 @@ def callback():
     except InvalidSignatureError:
         abort(400)
     return 'OK'
-
 
 # 定義「收到文字訊息」時的動作，當有人傳送文字給機器人時，這個函式會被觸發
 @handler.add(MessageEvent, message = TextMessage)
@@ -188,9 +214,9 @@ def handle_message(event):
         stage = 'parse_intent'
         log_debug(f"stage={stage}")
         # model.generate_content(user_text) 傳入使用者訊息，
-        # 根據 SYSTEM_INSTRUCTION 回傳 GenerateContentResponse 物件
-        model_result = model.generate_content(user_text)
-        log_debug(f"Gemini raw response: {repr(model_result)}")
+        # 根據 IDENTIFY_INSTRUCTION_PROMPT 回傳 GenerateContentResponse 物件
+        model_result = identify_model.generate_content(user_text)
+        log_debug(f"Gemini raw response: {model_result}")
         intent = parse_intent(model_result)
 
         # 第二步：function本地過濾
@@ -204,49 +230,22 @@ def handle_message(event):
             )
             return
 
-        # (選配) 第三步：生成推薦文案
-        recommendation = None
+        # (選配) 第三步：生成推薦文案（每間店一筆，並行呼叫 LLM）
+        recommendations = None
         try:
             stage = 'generate_recommendation'
             log_debug(f"stage={stage}")
-            recommendation = generate_recommendation(results)
+            recommendations = generate_recommendation(results)
         except Exception:
-            # 忽略推薦文生成失敗，不影響主流程
-            recommendation = None
+            recommendations = None
 
         # 第四步：根據 ui_tag 組裝回覆
         stage = 'assemble_reply'
         log_debug(f"stage={stage}")
         ui_tag = intent.get('ui_tag') if isinstance(intent, dict) else None
-        # if ui_tag and str(ui_tag).upper() == 'CAROUSEL':
-        #     # 準備 Carousel Flex message
-        #     bubbles = []
-        #     for shop in results[:5]:
-        #         title = shop.get('name') or shop.get('shop') or '不明店名'
-        #         loc = shop.get('location') or '不明地區'
-        #         style = shop.get('style') or '不明口味'
-        #         addr = shop.get('address') or ''
-        #         body_lines = f"{loc} / {style}\n{addr}"
-        #         if recommendation:
-        #             body_lines += f"\n{recommendation}"
-        #         bubble = {
-        #             "type": "bubble",
-        #             "body": {
-        #                 "type": "box",
-        #                 "layout": "vertical",
-        #                 "contents": [
-        #                     {"type": "text", "text": title, "weight": "bold", "size": "md"},
-        #                     {"type": "text", "text": body_lines, "wrap": True, "size": "sm"}
-        #                 ]
-        #             }
-        #         }
-            #     bubbles.append(bubble)
-
-            # flex = FlexSendMessage(alt_text='拉麵推薦', contents={"type": "carousel", "contents": bubbles})
-            # line_bot_api.reply_message(event.reply_token, flex)
 
         if ui_tag and str(ui_tag).upper() == 'CAROUSEL':
-            carousel_contents = assemble_carousel(results, recommendation)
+            carousel_contents = assemble_carousel(results, recommendations)
             flex = FlexSendMessage(alt_text='拉麵推薦', contents=carousel_contents)
             line_bot_api.reply_message(event.reply_token, flex)
 
@@ -261,14 +260,17 @@ def handle_message(event):
                 items.append(f"{i+1}. {name} ({loc} / {style}) {addr}")
 
             reply_text = f"找到 {len(results)} 間符合條件的店：\n" + "\n".join(items)
-            if recommendation:
-                reply_text += "\n\n推薦詞：\n" + recommendation
+            if recommendations:
+                if isinstance(recommendations, list):
+                    reply_text += "\n\n推薦詞：\n" + "\n".join(f"{i+1}. {r}" for i, r in enumerate(recommendations))
+                else:
+                    reply_text += "\n\n推薦詞：\n" + recommendations
 
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
     except Exception as e:
         # 任一層出錯都回覆忙碌訊息，並寫入錯誤日誌
-        msg = f"handle_message error at stage '{stage}': {repr(e)}"
+        msg = f"handle_message error at stage '{stage}': {e}"
         log_debug(msg)
         import traceback
         with open('error.log', 'a', encoding='utf-8') as f:
@@ -276,35 +278,42 @@ def handle_message(event):
         try:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text='系統忙碌中，請稍後再試。'))
         except Exception as inner:
-            log_debug(f"reply failed: {repr(inner)}")
+            log_debug(f"reply failed: {inner}")
 
-def process_ramen_request(user_text):
+# ===========================================================================
+# 地端測試用函數
+# ===========================================================================
+def main_process(user_text):
     """將原本在 handle_message 裡的邏輯獨立出來，方便重複使用"""
     try:
-        # 第一層：AI 解析意圖
+        # 第一層：LLM 解析意圖
         print(f"{CYAN}STEP 1：呼叫 Gemini 解析意圖...{RESET}")
         print(f"{GREEN}使用者輸入: {user_text}{RESET}")
-        model_result = model.generate_content(user_text)
-        print(f"{GREEN}Gemini 原始回應: {repr(model_result)}{RESET}")
+        model_result = identify_model.generate_content(user_text)
+        print(f"{GREEN}Gemini 原始回應: {model_result.candidates!r}{RESET}")
         print(f"{CYAN}{type(model_result)}{RESET}")
+        
         print(f"{CYAN}STEP 2：解析意圖中...{RESET}") 
         intent = parse_intent(model_result)
         print(f"{GREEN}解析結果: {intent}{RESET}")
-        # 第二層：本地資料篩選
+        
+        # 第二層：function 本地資料篩選
         print(f"{CYAN}STEP 3：根據意圖篩選資料...{RESET}")
         results = filter_ramen_data(intent)
         print(f"{GREEN}篩選結果: {results}{RESET}")
         if not results:
             return "找不到符合條件的拉麵店。", intent, None
 
-        # 第三層：生成 AI 推薦語
-        recommendation = generate_recommendation(results)
-        
-        # 回傳處理結果
-        return results, intent, recommendation
+        # 第三層：生成 LLM 推薦語（每間店一筆 list）
+        print(f"{CYAN}STEP 4：生成推薦文案...{RESET}")
+        recommendations = generate_recommendation(results)
+        print(f"{GREEN}推薦結果: {recommendations}{RESET}")
+
+        # 回傳最終處理結果
+        return results, intent, recommendations
     except Exception as e:
-        print(f"{RED}發生錯誤: {repr(e)}{RESET}")
-        return f"發生錯誤: {repr(e)}", None, None
+        print(f"{RED}發生錯誤: {e}{RESET}")
+        return f"發生錯誤: {e}", None, None
 
 
 
@@ -322,12 +331,15 @@ if __name__ == "__main__":
             test_input = input(">> 使用者提問: ")
             if test_input.lower() == 'exit':
                 break
-            
             # 模擬執行
-            res, intent, rec = process_ramen_request(test_input)
+            final_respond, intent, recommendations = main_process(test_input)
             
-            print("-" * 30)
+            print("=" * 30)
             print(f"【AI 解析意圖】: {intent}")
-            print(f"【篩選店家結果】: {res}")
-            print(f"【AI 推薦文案】: {rec}")
             print("-" * 30)
+            print(f"【篩選店家結果】: {final_respond}")
+            print("-" * 30)
+            rec_list = recommendations or []
+            print("【AI 推薦文案】:", rec_list if not rec_list else "\n".join(f"  {i+1}. {r}" for i, r in enumerate(rec_list)))
+            print("=" * 30)
+            

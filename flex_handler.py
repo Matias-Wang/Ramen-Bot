@@ -122,4 +122,4 @@ def get_flex_bubble(shop, recommendation = None):
         return bubble
     except Exception as e:
         print(f"FM 組裝失敗: {e}")
-        return None
+        return None 
