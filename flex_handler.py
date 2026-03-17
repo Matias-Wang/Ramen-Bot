@@ -85,18 +85,22 @@ def filter_ramen_data(intent):
     return filtered
 
 # === 3. FM 組裝主函式 (High-level) ===
-def assemble_carousel(results, recommendation=None):
-    """
-    將多個 Bubble 組合成 Carousel。
+def assemble_carousel(results, recommendations=None):
+    """將多個 Bubble 組合成 Carousel。
+
     設定：results[:3] 確保最多只產出 3 筆資料。
+    建議推薦文 use 對應 index 的 recommendation（避免整個 list 被當成一段文字）。
     """
     bubbles = []
     # 嚴格限制最多 3 筆資料
-    for s in results[:3]: 
-        bubble = get_flex_bubble(s, recommendation)
+    for i, s in enumerate(results[:3]):
+        rec_text = None
+        if isinstance(recommendations, list) and i < len(recommendations):
+            rec_text = recommendations[i]
+        bubble = get_flex_bubble(s, rec_text)
         if bubble:
             bubbles.append(bubble)
-    
+
     return {
         "type": "carousel",
         "contents": bubbles
@@ -113,9 +117,12 @@ def get_flex_bubble(shop, recommendation = None):
         bubble['body']['contents'][0]['text'] = name    # 店名
         bubble['body']['contents'][1]['text'] = f"{shop.get('location')} · {shop.get('style')}"    # 地區與口味
         bubble['body']['contents'][2]['text'] = shop.get('address', '暫無地址')    # 地址
+        # AI 推薦文必須為字串（不能是 list/dict）
+        if not isinstance(recommendation, str):
+            recommendation = None
         bubble['body']['contents'][4]['text'] = recommendation or "點擊查看地圖了解更多。"    # AI 推薦
         
-        # 填充按鈕連結
+        # 填充按鈕連結``
         bubble['footer']['contents'][0]['action']['uri'] = f"https://www.google.com"
         # bubble['footer']['contents'][0]['action']['uri'] = f"https://www.google.com/maps/search/?api=1&query={name}"
         

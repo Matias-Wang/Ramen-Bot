@@ -1,7 +1,7 @@
 # === 在檔案頂部定義開關 ===
 # LINE_TAG = 1: 正式模式 (LINE + ngrok)
 # LINE_TAG = 0: 地端測試模式 (終端機輸出)
-LINE_TAG = 0
+LINE_TAG = 1
 
 # === imports ===
 import os
@@ -67,7 +67,7 @@ def extract_text(obj):    # 從 Gemini 回傳物件抽出文字
     for attr in ('text', 'output', 'content', 'candidates'):
         if hasattr(obj, attr):
             return getattr(obj, attr)
-    print(f"{YELLOW}extract_text() 回傳: {obj}{RESET}")
+
     return str(obj)
 
 def parse_intent(response):    # 解析 Gemini 的回傳物件，回傳 dict 形式的 intent
@@ -111,7 +111,6 @@ def get_one_recommendation(shop_summary: str) -> str:
     try:
         # prompt = RECOMMEND_PROMPT.replace("{shop_summary}", shop_summary)
         prompt = RECOMMEND_PROMPT.format(shop_summary = shop_summary)
-        print(f"{YELLOW}prompt: {prompt}{RESET}")
         recommend_result = recommend_model.generate_content(
             prompt,
             generation_config={
@@ -121,8 +120,7 @@ def get_one_recommendation(shop_summary: str) -> str:
                 "top_k": 10,
             },
         )
-        # print(f"{YELLOW}Gemini recommendation raw response: {recommend_result.candidates[0].content.parts[0].text}{RESET}")
-        print(f"{YELLOW}Gemini recommendation raw response: {recommend_result}{RESET}")
+
         raw = extract_text(recommend_result).strip()
         raw = re.sub(r"```\w*\s*", "", raw).strip()
         if not raw or any(c in raw for c in "I will"):
@@ -156,7 +154,7 @@ def generate_recommendation(shops_info: list[dict], num_shops: int = 5) -> list[
         return None
     selected = shops_info[:num_shops]
     summaries: list[str] = [build_shop_summary(content) for content in selected]
-    print(f"{YELLOW}shop_summaries (共 {len(summaries)} 筆):{RESET}")
+
     for i, s in enumerate(summaries):
         print(f"  [{i}] {s[:80]}...")
     try:
@@ -164,7 +162,7 @@ def generate_recommendation(shops_info: list[dict], num_shops: int = 5) -> list[
     except Exception as e:
         print(f"{RED}fetch recommendations error: {e}{RESET}")
         recommendations = ["點擊查看地圖了解更多。"] * len(summaries)
-    print(f"{YELLOW}recommendations: {recommendations}{RESET}")
+
     return recommendations
 
 
