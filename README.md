@@ -10,7 +10,7 @@
 
 ### 使用架構/技術
 - 透過 Gemini（Google AI）解析使用者輸入的自然語言（地區、口味、回覆形式）
-- 以本地資料庫(ramen_data.json) 做快速店家篩選
+- 以本地資料庫`ramen_data.json` 做快速店家篩選
 - 再由 Gemini 依據店家內容生成一句吸引人的推薦文
 - 透過 LINE Flex Message Carousel 呈現推薦結果
 
@@ -39,7 +39,7 @@
 - `processor.py`：依照意圖篩選 `ramen_data.json`
 - `flex_handler.py`：組成 LINE Flex Carousel 的 Bubble
 - `prompts.py`：Gemini prompt 模板（意圖解析、推薦文生成）
-- `ramen_data.json`：本地拉麵店資料庫
+- `ramen_data.json`：本地拉麵店資料庫，源自作者本人Instagram分享文章
 
 ### 核心模組用途
 - **意圖解析**：將使用者輸入轉成 `{ location, style, ui_tag }`
@@ -154,4 +154,4 @@ python app.py
 ## 作者資訊
 - 作者：MatiasWang
 - Email：tzuanwork903@gmail.com
-- Github：https://github.com/MatiasWang
+- Github：https://github.com/Matias-Wang
