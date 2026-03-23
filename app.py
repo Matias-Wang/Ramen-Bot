@@ -1,7 +1,7 @@
 # === 在檔案頂部定義開關 ===
 # LINE_TAG = 1: 正式模式 (LINE + ngrok)
 # LINE_TAG = 0: 地端測試模式 (終端機輸出)
-LINE_TAG = 1
+LINE_TAG = 0
 
 # === imports ===
 import os
@@ -140,7 +140,9 @@ async def fetch_all_recommendations_async(summaries: list[str]) -> list[str]:
     tasks = [get_one_recommendation_async(s) for s in summaries]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     out: list[str] = []
-    for i, r in enumerate[str | BaseException](results):
+
+
+    for i, r in enumerate(results):
         if isinstance(r, Exception):
             print(f"{RED}recommendation[{i}] error: {r}{RESET}")
             out.append(default)
@@ -148,7 +150,7 @@ async def fetch_all_recommendations_async(summaries: list[str]) -> list[str]:
             out.append(r)
     return out
 
-def generate_recommendation(shops_info: list[dict], num_shops: int = 5) -> list[str] | None:
+def generate_recommendation(shops_info: list[dict], num_shops: int = 3) -> list[str] | None:
     """依店家列表產生「每間店一筆」推薦文，以 async/await 並行呼叫 LLM，回傳與店家順序對應的 list[str]。"""
     if not shops_info:
         return None
@@ -339,5 +341,13 @@ if __name__ == "__main__":
             print("-" * 30)
             rec_list = recommendations or []
             print("【AI 推薦文案】:", rec_list if not rec_list else "\n".join(f"  {i+1}. {r}" for i, r in enumerate(rec_list)))
-            print("=" * 30)
+            print("-" * 30)
             
+            # 本地測試預覽 Flex Message JSON
+            ui_tag = intent.get('ui_tag') if isinstance(intent, dict) else None
+            if ui_tag and str(ui_tag).upper() == 'CAROUSEL' and isinstance(final_respond, list) and final_respond:
+                print("【Flex Message JSON 預覽】:")
+                flex_json = assemble_carousel(final_respond, recommendations)
+                flex_text = json.dumps(flex_json, ensure_ascii=False, indent=2)
+                print(f"{flex_text}")
+            print("=" * 30)
