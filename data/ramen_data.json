@@ -11,7 +11,7 @@
     "features": ["叉燒大片", "可免費加麵", "排隊名店"],
     "description": "這家店以熬煮 18 小時的京都風豚骨湯頭聞名，口感像奶油般滑順，推薦給喜歡重口味的拉麵愛好者。",
     "map_url": "https://maps.app.goo.gl/xxxx",
-    "image_url": "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?auto=format&fit=crop&w=800&q=80",
+    "image_url": "https://fastly.picsum.photos/id/1003/800/520.jpg?hmac=MgCfsWUeuGR-Xe5iIcQ5--m00ob0P5DEXHsdMtYxCbo",
     "social_links": [
       {"label": "我的 IG", "url": "https://www.instagram.com/my_post" },
       {"label": "合作者A", "url": "https://www.instagram.com/collab_a" },
@@ -30,7 +30,7 @@
     "features": ["舒肥雞肉", "柚子胡椒", "女性熱門"],
     "description": "湯頭清澈見底卻富有層次感，淡淡的柚子香氣能解除湯頭的油膩感，非常適合午餐享用。",
     "map_url": "https://maps.app.goo.gl/yyyy",
-      "image_url": "https://fastly.picsum.photos/id/1003/800/520.jpg?hmac=MgCfsWUeuGR-Xe5iIcQ5--m00ob0P5DEXHsdMtYxCbo",
+    "image_url": "https://fastly.picsum.photos/id/1003/800/520.jpg?hmac=MgCfsWUeuGR-Xe5iIcQ5--m00ob0P5DEXHsdMtYxCbo",
     "social_links": [
       {"label": "我的 IG", "url": "https://www.instagram.com/my_post" },
       {"label": "合作者A", "url": "https://www.instagram.com/collab_a" },
@@ -47,9 +47,9 @@
     "price_range": "200-280",
     "rating": 4.2,
     "features": ["手工細麵", "全麥麵粉", "捷運站旁"],
-    "description": "使用三種不同產地的海鹽調配而成，能帶出湯頭最純粹的鮮甜感，是南港展覽館附近的上班族首選。",
+    "description": "使用三種 different 產地的海鹽調配而成，能帶出湯頭最純粹的鮮甜感，是南港展覽館附近的上班族首選。",
     "map_url": "https://maps.app.goo.gl/zzzz",
-    "image_url": "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?auto=format&fit=crop&w=800&q=80",
+    "image_url": "https://example.com/ramen003.jpg",
     "social_links": [
       {"label": "我的 IG", "url": "https://www.instagram.com/my_post" },
       {"label": "合作者A", "url": "https://www.instagram.com/collab_a" },

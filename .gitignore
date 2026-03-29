@@ -3,3 +3,5 @@ __pycache__/
 error.log/
 .env
 error.log
+temp.json
+GEMINI.md
