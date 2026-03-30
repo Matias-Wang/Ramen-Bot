@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from agent_router import AgentRouter
 from flex_handler import assemble_carousel
 
-# === 使用者自定義變數 (第 21-27 行) ===
+# === 自定義變數 ===
 RED = '\033[91m'
 YELLOW = '\033[93m'
 GREEN = '\033[92m'
