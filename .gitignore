@@ -1,8 +1,13 @@
 .venv/
 __pycache__/
-error.log/
 .env
-error.log
+error.log/
+
+
+scripts/
+development_history/
+references/
 temp.json
+
+CLAUDE.md
 GEMINI.md
-spec.md

@@ -19,8 +19,13 @@ class GoogleMapsService:
     """
     Google Maps API 服務類別
 
-    這個類別封裝了與 Google Maps API 相關的功能，包括獲取經緯度、店家詳細資訊等。
-    注意：使用 Google Maps API 可能會產生費用，請確保在開發和測試過程中合理使用 API。
+    本類別符合 ARCHITECTURE.md v3.1 規範中的「工具化流程 (Skill-based)」：
+    1. Geocoding API: 實作 get_latlng，用於 Search Skill 的地理位置比對。
+    2. Google Places API (New): 實作 get_shop_details，封裝 Text Search 與 Place Details。
+    3. Media Proxy: 實作 get_photo_url，將照片編號轉換為 HTTPS URL。
+    
+    技術優化：
+    - Field Masking: 在呼叫時僅請求必要欄位，控管 API 支出。
     """
 
     def __init__(self) -> None:
@@ -29,6 +34,7 @@ class GoogleMapsService:
         self.api_key = os.getenv("GOOGLE_MAPS_API_KEY")
         if self.api_key:
             try:
+                # 使用 googlemaps 官方 Python 庫
                 self.gmaps = googlemaps.Client(key=self.api_key)
             except Exception as e:
                 print(f"{RED}STEP ERROR: 初始化 Google Maps 客戶端失敗: {e}{RESET}")
@@ -39,7 +45,8 @@ class GoogleMapsService:
 
     def get_latlng(self, address: str) -> Optional[Dict[str, float]]:
         """
-        將地址轉換為經緯度座標。用於提供地理位置相關的查詢。
+        Geocoding API: 將地址轉換為經緯度座標。
+        用於 Search Skill 中的地理位置過濾。
 
         Parameters
         ----------

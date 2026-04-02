@@ -177,8 +177,9 @@ python app.py
 研發進度 (R&D Progress)
 1. [CORE]：完成非同步應對 (Async Handling) 與日誌追蹤。
 2. [SKILL 1]：實作 IG 數據採集、AI 內容提取與 Geocoding 地址校驗。
-3. [SKILL 2]：實作照片代理服務與智慧快取回寫系統。
-4. [SKILL 3]：完成向量資料庫 (Vector DB) 整合與 RAG 檢索開發。
+3. [IG Scraper]：完成蒐集我個人公開IG帳號並清整到資料庫。
+4. [SKILL 2]：實作照片代理服務與智慧快取回寫系統。
+54. [SKILL 3]：完成向量資料庫 (Vector DB) 整合與 RAG 檢索開發。
 
 ---
 
@@ -186,3 +187,4 @@ python app.py
 - 作者：MatiasWang
 - Email：tzuanwork903@gmail.com
 - Github：https://github.com/Matias-Wang
+- Insagram：https://www.instagram.com/tzuan903

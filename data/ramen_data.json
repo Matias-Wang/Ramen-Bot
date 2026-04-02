@@ -4,6 +4,10 @@
     "name": "極濃豚骨一番",
     "location": "南港",
     "address": "台北市南港區經貿二路 XXX 號",
+    "coordinates": {
+      "lat": 25.0560,
+      "lng": 121.6110
+    },
     "style": "豚骨",
     "richness": "極濃郁",
     "price_range": "250-350",
@@ -23,6 +27,10 @@
     "name": "清流雞白湯研所",
     "location": "中山",
     "address": "台北市中山區中山北路 XXX 巷",
+    "coordinates": {
+      "lat": 25.0520,
+      "lng": 121.5200
+    },
     "style": "雞白湯",
     "richness": "清爽",
     "price_range": "220-300",
@@ -42,6 +50,10 @@
     "name": "南港鹽味職人",
     "location": "南港",
     "address": "台北市南港區興華路 XXX 號",
+    "coordinates": {
+      "lat": 25.0550,
+      "lng": 121.6060
+    },
     "style": "鹽味",
     "richness": "適中",
     "price_range": "200-280",
