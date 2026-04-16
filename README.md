@@ -18,7 +18,7 @@
 - 透過 LINE Flex Message Carousel 呈現推薦結果
 
 ### 開發規範 (Technical Standards)
-- Field Masking (欄位遮罩)：Places API 僅抓取 rating, userRatingCount, photos, currentOpeningHours 欄位以控管成本。
+- Field Masking (欄位遮罩)：Places API (New) 僅抓取 rating, userRatingCount, photos, currentOpeningHours 欄位以控管成本。
 - Flex Handler 規範：嚴格執行索引配對，禁止生成空盒子 (contents: [])，確保型別安全。
 - 逾時應對：針對 1 秒 Webhook 限制，考慮實作非同步處理或極大化快取機制。
 
@@ -186,5 +186,5 @@ python app.py
 ## 作者資訊
 - 作者：MatiasWang
 - Email：tzuanwork903@gmail.com
-- Github：https://github.com/Matias-Wang
+- Github：[Matias-Wang](https://github.com/Matias-Wang/Ramen-Bot)
 - Insagram：https://www.instagram.com/tzuan903

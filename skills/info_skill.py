@@ -50,42 +50,36 @@ class InfoSkill:
 
         if needs_update:
             print(f"Fetching fresh data for {shop_name} from Google Maps...")
-            place_id = target_shop.get('place_id') if target_shop else self.gmaps_service.get_place_id(shop_name, location)
-            
-            if place_id:
-                details = self.gmaps_service.get_place_details(place_id)
-                if details:
-                    # 整理資料
-                    photo_ref = details.get('photos', [{}])[0].get('photo_reference')
-                    photo_url = self.gmaps_service.get_photo_url(photo_ref) if photo_ref else None
-                    
-                    new_info = {
-                        "name": details.get('name', shop_name),
-                        "place_id": place_id,
-                        "rating": details.get('rating'),
-                        "user_ratings_total": details.get('user_ratings_total'),
-                        "address": details.get('formatted_address'),
-                        "image_url": photo_url or (target_shop.get('image_url') if target_shop else None),
-                        "last_updated": datetime.datetime.now().isoformat()
-                    }
-                    
-                    if target_shop:
-                        target_shop.update(new_info)
-                    else:
-                        # 如果原本不在資料庫，新增一筆 (這裡可能需要更多欄位，暫以 details 為主)
-                        new_info["location"] = location
-                        new_info["style"] = "未知"
-                        all_shops.append(new_info)
-                        target_shop = new_info
-                    
-                    self._save_data(all_shops)
+            details = self.gmaps_service.get_shop_details(shop_name, location)
+
+            if details:
+                new_info = {
+                    "name": details.get('name', shop_name),
+                    "place_id": details.get('place_id'),
+                    "rating": details.get('rating'),
+                    "user_ratings_total": details.get('user_ratings_total'),
+                    "address": details.get('formatted_address'),
+                    "image_url": details.get('photo_url') or (target_shop.get('image_url') if target_shop else None),
+                    "last_updated": datetime.datetime.now().isoformat()
+                }
+
+                if target_shop:
+                    target_shop.update(new_info)
+                else:
+                    # 如果原本不在資料庫，新增一筆 (這裡可能需要更多欄位，暫以 details 為主)
+                    new_info["location"] = location
+                    new_info["style"] = "未知"
+                    all_shops.append(new_info)
+                    target_shop = new_info
+
+                self._save_data(all_shops)
             else:
-                print(f"Could not find place_id for {shop_name}")
+                print(f"Could not find shop details for {shop_name}")
 
         return target_shop
 
 if __name__ == "__main__":
     # 測試
     skill = InfoSkill()
-    info = skill.get_shop_info("極濃豚骨一番", "南港")
+    info = skill.get_shop_info("辣麻味噌沾麵 鬼金棒 中山店", "中山區")
     print(f"Final Info: {info}")

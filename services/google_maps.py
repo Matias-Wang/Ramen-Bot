@@ -1,4 +1,5 @@
 import os
+import requests
 from typing import Optional, Dict, Any
 import googlemaps
 from dotenv import load_dotenv
@@ -14,18 +15,21 @@ CYAN = "\033[96m"
 MAGAENTA = "\033[95m"
 RESET = "\033[0m"
 
+PLACES_NEW_BASE_URL = "https://places.googleapis.com/v1"
+
 
 class GoogleMapsService:
     """
     Google Maps API 服務類別
 
     本類別符合 ARCHITECTURE.md v3.1 規範中的「工具化流程 (Skill-based)」：
-    1. Geocoding API: 實作 get_latlng，用於 Search Skill 的地理位置比對。
-    2. Google Places API (New): 實作 get_shop_details，封裝 Text Search 與 Place Details。
-    3. Media Proxy: 實作 get_photo_url，將照片編號轉換為 HTTPS URL。
-    
+    1. Geocoding API：實作 get_latlng，用於 Search Skill 的地理位置比對。
+    2. Places API (New)：實作 get_shop_details，透過 Text Search 取得即時評分與照片。
+    3. Media Proxy：實作 get_photo_url，將照片資源名稱轉換為 HTTPS URL。
+
     技術優化：
-    - Field Masking: 在呼叫時僅請求必要欄位，控管 API 支出。
+    - Field Masking：在呼叫時僅請求必要欄位，控管 API 支出。
+    - 照片高度上限：800px，符合行動裝置與 LINE Flex Message 規範。
     """
 
     def __init__(self) -> None:
@@ -34,7 +38,6 @@ class GoogleMapsService:
         self.api_key = os.getenv("GOOGLE_MAPS_API_KEY")
         if self.api_key:
             try:
-                # 使用 googlemaps 官方 Python 庫
                 self.gmaps = googlemaps.Client(key=self.api_key)
             except Exception as e:
                 print(f"{RED}STEP ERROR: 初始化 Google Maps 客戶端失敗: {e}{RESET}")
@@ -45,7 +48,7 @@ class GoogleMapsService:
 
     def get_latlng(self, address: str) -> Optional[Dict[str, float]]:
         """
-        Geocoding API: 將地址轉換為經緯度座標。
+        Geocoding API：將地址轉換為經緯度座標。
         用於 Search Skill 中的地理位置過濾。
 
         Parameters
@@ -74,7 +77,10 @@ class GoogleMapsService:
 
     def get_shop_details(self, name: str, location: str = "") -> Optional[Dict[str, Any]]:
         """
-        透過店名搜尋即時資訊 (含星等、照片)。
+        Places API (New) Text Search：透過店名搜尋即時資訊。
+
+        使用 Field Masking 僅抓取 id, displayName, rating,
+        userRatingCount, formattedAddress, photos 欄位以控管成本。
 
         Parameters
         ----------
@@ -86,93 +92,121 @@ class GoogleMapsService:
         Returns
         -------
         Optional[Dict[str, Any]]
-            包含店家詳細資訊的字典，包含名稱、評分、總評分數、格式化地址及照片 URL。
+            標準化後的店家資訊字典，包含 place_id、name、rating、
+            user_ratings_total、formatted_address、photo_url。
             若找不到則回傳 None。
         """
-        if not self.gmaps:
+        if not self.api_key:
             return None
 
         query = f"{location} {name}" if location else name
-        print(f"{GREEN}STEP: 正在搜尋店家詳細資訊 - {query}{RESET}")
+        print(f"{GREEN}STEP: 正在搜尋店家詳細資訊 (Places API New) - {query}{RESET}")
 
         try:
-            # 1. 搜尋 Place ID
-            place_result = self.gmaps.find_place(
-                input=query, input_type="textquery", fields=["place_id"]
-            )
+            url = f"{PLACES_NEW_BASE_URL}/places:searchText"
+            headers = {
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": self.api_key,
+                "X-Goog-FieldMask": (
+                    "places.id,"
+                    "places.displayName,"
+                    "places.rating,"
+                    "places.userRatingCount,"
+                    "places.formattedAddress,"
+                    "places.photos"
+                ),
+            }
+            body = {
+                "textQuery": query,
+                "languageCode": "zh-TW",
+                "maxResultCount": 1,
+            }
 
-            if place_result.get("status") != "OK" or not place_result.get("candidates"):
+            response = requests.post(url, json=body, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            places = data.get("places", [])
+            if not places:
                 print(f"{YELLOW}找不到店家: {query}{RESET}")
                 return None
 
-            place_id = place_result["candidates"][0]["place_id"]
+            place = places[0]
 
-            # 2. 透過 Place ID 獲取詳細資訊
-            details_result = self.gmaps.place(
-                place_id=place_id,
-                fields=[
-                    "name",
-                    "rating",
-                    "user_ratings_total",
-                    "photo",
-                    "formatted_address",
-                    "geometry",
-                ],
-                language="zh-TW",
-            )
+            # 取得第一張照片 URL
+            photo_url = None
+            photos = place.get("photos", [])
+            if photos:
+                photo_name = photos[0].get("name")
+                if photo_name:
+                    photo_url = self.get_photo_url(photo_name)
 
-            if details_result.get("status") == "OK":
-                result = details_result.get("result", {})
-
-                # 處理照片 URL (若有照片引用)
-                if result.get("photos"):
-                    photo_ref = result["photos"][0]["photo_reference"]
-                    result["photo_url"] = self.get_photo_url(photo_ref)
-
-                return result
+            return {
+                "place_id": place.get("id"),
+                "name": place.get("displayName", {}).get("text", name),
+                "rating": place.get("rating"),
+                "user_ratings_total": place.get("userRatingCount"),
+                "formatted_address": place.get("formattedAddress"),
+                "photo_url": photo_url,
+            }
 
         except Exception as e:
             print(f"{RED}STEP ERROR: 獲取店家詳細資訊失敗: {e}{RESET}")
 
         return None
 
-    def get_photo_url(self, photo_reference: str, max_width: int = 400) -> str:
+    def get_photo_url(self, photo_name: str, max_height_px: int = 800) -> Optional[str]:
         """
-        獲取照片的有效 URL。
+        Places API (New) Media：將照片資源名稱轉換為有效的 HTTPS URL。
 
         Parameters
         ----------
-        photo_reference : str
-            Google Maps API 回傳的照片引用字串。
-        max_width : int, optional
-            照片最大寬度，預設為 400。
+        photo_name : str
+            Places API (New) 回傳的照片資源名稱，
+            格式為 'places/{place_id}/photos/{photo_id}'。
+        max_height_px : int, optional
+            照片最大高度 (px)，預設為 800。
 
         Returns
         -------
-        str
-            照片的直接連結 URL。
+        Optional[str]
+            照片的直接 HTTPS URL，若失敗則回傳 None。
         """
-        return (
-            f"https://maps.googleapis.com/maps/api/place/photo"
-            f"?maxwidth={max_width}&photoreference={photo_reference}&key={self.api_key}"
-        )
+        if not self.api_key:
+            return None
+
+        try:
+            url = f"{PLACES_NEW_BASE_URL}/{photo_name}/media"
+            params = {
+                "maxHeightPx": max_height_px,
+                "skipHttpRedirect": "true",
+                "key": self.api_key,
+            }
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            return response.json().get("photoUri")
+        except Exception as e:
+            print(f"{RED}STEP ERROR: 獲取照片 URL 失敗: {e}{RESET}")
+            return None
 
 
 if __name__ == "__main__":
     # 測試程式碼
     service = GoogleMapsService()
 
-    # 測試 1: 獲取經緯度
+    # 測試 1: Geocoding API - 獲取經緯度
     addr = "台北市南港區"
     latlng = service.get_latlng(addr)
     print(f"地址: {addr} -> 經緯度: {latlng}")
 
-    # 測試 2: 搜尋店家詳細資訊
+    # 測試 2: Places API (New) - 搜尋店家詳細資訊
     shop_name = "極濃豚骨一番"
     shop_loc = "南港"
     details = service.get_shop_details(shop_name, shop_loc)
     if details:
         print(f"店家名稱: {details.get('name')}")
         print(f"評分: {details.get('rating')} ({details.get('user_ratings_total')} 則評論)")
-        print(f"照片 URL: {details.get('photo_url')}")
         print(f"地址: {details.get('formatted_address')}")
+        print(f"照片 URL: {details.get('photo_url')}")
+    else:
+        print("找不到店家資訊")
