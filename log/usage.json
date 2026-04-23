@@ -1,0 +1,16 @@
+{
+  "date": "2026-04-23",
+  "google_maps_api": {
+    "count": 0,
+    "limit": 100
+  },
+  "llm_gemini": {
+    "count": 0,
+    "token_consumed": 0,
+    "limit": 100
+  },
+  "line_api": {
+    "count": 0,
+    "limit": 100
+  }
+}

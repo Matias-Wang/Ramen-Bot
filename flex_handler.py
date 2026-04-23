@@ -17,6 +17,7 @@ BASE_BUBBLE_STRUCTURE = {
         "contents": [
             {"type": "text", "text": "店名", "weight": "bold", "size": "xl"},
             {"type": "text", "text": "地區 · 口味", "size": "sm", "color": "#999999"},
+            {"type": "text", "text": "評分", "size": "sm", "color": "#f5a623"},
             {"type": "text", "text": "地址", "size": "xs", "color": "#aaaaaa", "wrap": True},
             {"type": "separator", "margin": "lg"},
             {
@@ -75,8 +76,20 @@ def get_flex_bubble(shop, recommendation=None):
     body_contents = bubble['body']['contents']
     body_contents[0]['text'] = name
     body_contents[1]['text'] = f"{location} · {style}"
-    body_contents[2]['text'] = address
-    body_contents[4]['text'] = rec_text
+
+    rating = shop.get('rating')
+    user_ratings_total = shop.get('user_ratings_total')
+    if rating:
+        rating_text = f"⭐ {rating}"
+        if user_ratings_total:
+            rating_text += f"（{user_ratings_total:,} 則評論）"
+        body_contents[2]['text'] = rating_text
+        body_contents[3]['text'] = address
+        body_contents[5]['text'] = rec_text
+    else:
+        body_contents.pop(2)
+        body_contents[2]['text'] = address
+        body_contents[4]['text'] = rec_text
 
     if image_url:
         bubble['hero']['url'] = image_url

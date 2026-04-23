@@ -4,6 +4,7 @@ import google.generativeai as genai
 from skills.Search_skill import filter_ramen_data, generate_recommendations
 from skills.info_skill import InfoSkill
 from prompts import IDENTIFY_INSTRUCTION_PROMPT
+from log.usage_tracker import check_and_increment, record_tokens
 
 # 顏色變數（用於 Router 內部的錯誤輸出）
 RED = '\033[91m'
@@ -42,7 +43,11 @@ class AgentRouter:
         """
         # --- STEP 1: 意圖解析 ---
         try:
+            if not check_and_increment("llm_gemini"):
+                raise Exception("LLM 每日使用上限已達")
             model_result = self.identify_model.generate_content(user_text)
+            if hasattr(model_result, "usage_metadata") and model_result.usage_metadata:
+                record_tokens(model_result.usage_metadata.total_token_count or 0)
             intent_data = self._parse_intent_json(model_result)
             print(f"[DEBUG] AI 解析意圖: {intent_data}")
         except Exception as e:

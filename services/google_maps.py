@@ -4,6 +4,8 @@ from typing import Optional, Dict, Any
 import googlemaps
 from dotenv import load_dotenv
 
+from log.usage_tracker import check_and_increment
+
 load_dotenv()
 
 # <使用者自訂變數>
@@ -64,6 +66,9 @@ class GoogleMapsService:
         if not self.gmaps:
             return None
 
+        if not check_and_increment("google_maps_api"):
+            return None
+
         print(f"{GREEN}STEP: 正在獲取地址經緯度 - {address}{RESET}")
         try:
             geocode_result = self.gmaps.geocode(address, language="zh-TW")
@@ -97,6 +102,9 @@ class GoogleMapsService:
             若找不到則回傳 None。
         """
         if not self.api_key:
+            return None
+
+        if not check_and_increment("google_maps_api"):
             return None
 
         query = f"{location} {name}" if location else name
@@ -173,6 +181,9 @@ class GoogleMapsService:
             照片的直接 HTTPS URL，若失敗則回傳 None。
         """
         if not self.api_key:
+            return None
+
+        if not check_and_increment("google_maps_api"):
             return None
 
         try:

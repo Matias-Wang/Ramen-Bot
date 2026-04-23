@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 import google.generativeai as genai
 from prompts import RECOMMEND_PROMPT
 from services.google_maps import GoogleMapsService
+from log.usage_tracker import check_and_increment, record_tokens
 
 # <使用者自訂變數>
 RED = "\033[91m"
@@ -173,10 +174,14 @@ def get_one_recommendation(shop_summary: str, model: Any) -> str:
     """單筆推薦文生成 (同步轉非同步調用用)"""
     default = "點擊查看地圖了解更多。"
     try:
+        if not check_and_increment("llm_gemini"):
+            return default
         prompt = RECOMMEND_PROMPT.format(shop_summary=shop_summary)
         recommend_result = model.generate_content(
             prompt, generation_config={"temperature": 0.6, "max_output_tokens": 1200}
         )
+        if hasattr(recommend_result, "usage_metadata") and recommend_result.usage_metadata:
+            record_tokens(recommend_result.usage_metadata.total_token_count or 0)
 
         def _extract_text(obj):
             for attr in ("text", "output", "content", "candidates"):

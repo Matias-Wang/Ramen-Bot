@@ -6,6 +6,7 @@ __pycache__/
 data/
 CLAUDE.md
 GEMINI.md
+.claude
 
 error.log/
 scripts/

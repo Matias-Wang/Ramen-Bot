@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 # === 外部模組匯入 ===
 from agent_router import AgentRouter
 from flex_handler import assemble_carousel
+from log.usage_tracker import check_and_increment
 
 # === 自定義變數 ===
 RED = '\033[91m'
@@ -71,6 +72,7 @@ def handle_message(event):
         ui_tag = result.get('ui_tag')
         
         if not data and intent != 'KNOWLEDGE_QUERY':
+            check_and_increment("line_api")
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text='找不到符合條件的拉麵店，請試著提供更多或不同的條件。')
@@ -80,8 +82,10 @@ def handle_message(event):
         if ui_tag == 'CAROUSEL' and data:
             carousel_contents = assemble_carousel(data, recommendations)
             flex = FlexSendMessage(alt_text='拉麵推薦', contents=carousel_contents)
+            check_and_increment("line_api")
             line_bot_api.reply_message(event.reply_token, flex)
         elif intent == 'KNOWLEDGE_QUERY':
+            check_and_increment("line_api")
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text=result.get('message', '百科功能開發中！'))
@@ -97,11 +101,13 @@ def handle_message(event):
             reply_text = f"找到 {len(data)} 間店：\n" + "\n".join(items)
             if recommendations:
                 reply_text += "\n\n推薦詞：\n" + "\n".join(f"{i+1}. {r}" for i, r in enumerate(recommendations))
-            
+
+            check_and_increment("line_api")
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
     except Exception as e:
         print(f"Error in handle_message: {e}")
+        check_and_increment("line_api")
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text='系統忙碌中，請稍後再試。'))
 
 if __name__ == "__main__":
