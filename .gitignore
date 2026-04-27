@@ -9,8 +9,13 @@ GEMINI.md
 .claude
 
 error.log/
+log/
 scripts/
 development_history/
 docs/
 temp.json
+
+# 資料清理
+dta_pipline.py
+data/
 

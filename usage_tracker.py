@@ -7,7 +7,7 @@ RED = "\033[91m"
 GREEN = "\033[92m"
 RESET = "\033[0m"
 
-LOG_PATH = os.path.join(os.path.dirname(__file__), "usage.json")
+LOG_PATH = os.path.join(os.path.dirname(__file__), "log", "usage.json")
 
 
 def _default_data() -> dict:

@@ -4,7 +4,7 @@ import google.generativeai as genai
 from skills.Search_skill import filter_ramen_data, generate_recommendations
 from skills.info_skill import InfoSkill
 from prompts import IDENTIFY_INSTRUCTION_PROMPT
-from log.usage_tracker import check_and_increment, record_tokens
+from usage_tracker import check_and_increment, record_tokens
 
 # 顏色變數（用於 Router 內部的錯誤輸出）
 RED = '\033[91m'

@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional
 import google.generativeai as genai
 from prompts import RECOMMEND_PROMPT
 from services.google_maps import GoogleMapsService
-from log.usage_tracker import check_and_increment, record_tokens
+from usage_tracker import check_and_increment, record_tokens
 
 # <使用者自訂變數>
 RED = "\033[91m"

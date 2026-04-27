@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 # === 外部模組匯入 ===
 from agent_router import AgentRouter
 from flex_handler import assemble_carousel
-from log.usage_tracker import check_and_increment
+from usage_tracker import check_and_increment
 
 # === 自定義變數 ===
 RED = '\033[91m'
@@ -144,3 +144,4 @@ if __name__ == "__main__":
                 print(f"{RED} STEP 4 ERROR：{e}{RESET}")
             
             print(f"{MAGAENTA}{'='*50}{RESET}")
+    

@@ -68,6 +68,25 @@
 ### 成本控管與效能限制 (Cost Guardrail)
 - Field Masking：在呼叫 Google Places API 時，僅請求必要欄位（如 places.rating），有效降低 API 消耗支出。
 - 圖片優化：設定 maxHeightPx 為 800px，確保圖片大小適合行動裝置載入且符合 LINE Flex Message 比例。
+- 每日用量追蹤器 (Daily Usage Tracker)：實作 `log/usage_tracker.py`，在每次呼叫外部 API 或 LLM 前強制執行配額檢查。
+
+  **追蹤範圍與上限：**
+  | 追蹤鍵值 | 涵蓋呼叫 | 每日上限 |
+  |---|---|---|
+  | `google_maps_api` | Geocoding + Places Text Search + Places Photo（三者加總）| 100 次 |
+  | `llm_gemini` | 意圖解析 + 推薦文生成（所有 Gemini 呼叫加總）| 100 次 |
+  | `line_api` | reply_message 發送次數 | 100 次 |
+
+  **運作邏輯：**
+  1. 讀取 `log/usage.json`，比對 `date` 欄位。
+  2. 若日期不是當天 → 所有計數歸零、更新日期。
+  3. 若計數已達上限 → 印出錯誤訊息並阻擋呼叫（Google Maps / LLM），LINE 回覆仍發送但記錄扣點。
+  4. 正常情況 → 計數 +1 並寫回 JSON；LLM 呼叫額外記錄 `token_consumed`。
+  5. 追蹤器本身若發生例外 → 放行正常流程，不因追蹤錯誤影響服務。
+
+  **相關檔案：**
+  - `log/usage.json`：每日用量資料，可直接開啟查看。
+  - `log/usage_tracker.py`：提供 `check_and_increment(key)` 與 `record_tokens(tokens)` 兩支函式。
 
 ### 數據一致性校驗 (Data Integrity)
 - 自動化健康檢查：建立 CLI 工具比對本地地址與 Google 地圖回傳地址的精確度，防止同名店家的誤判。
@@ -90,6 +109,9 @@
 │   └── google_maps.py     # 外部 API 通訊
 ├── /data
 │   └── ramen_data.json    # 本地資料庫與 API 快取
+├── /log
+│   ├── usage.json         # 每日 API / LLM 用量記錄
+│   └── usage_tracker.py   # 配額檢查與 token 累計工具
 ├── /script
 │   └── ig_scraper.py      # 個人公開IG資料撈取腳本
 ├── processor.py           # 資料處理邏輯
@@ -111,7 +133,7 @@
 [ ] 全局錯誤處理：實作各 Skill 失敗時的降級回退（Fallback）機制。
 [ ] 分發器升級：擴展 agent_router.py 以支援三種 Skill 的自動切換。
 [ ] 非同步應對 (Async Handling)：實作防止 LINE Webhook 逾時的預處理機制。
-[ ] 日誌與追蹤 (Logging & Trace)：紀錄 AI 思考過程與 API 呼叫日誌，便於 CLI 除錯。
+[v] 日誌與追蹤 (Logging & Trace)：實作每日 API / LLM 用量追蹤器（`log/usage_tracker.py`），涵蓋 Google Maps、Gemini、LINE API 呼叫次數與 token 消耗量，並設有每日上限保護機制。
 [ ] 全局錯誤處理：實作各 Skill 失敗時的降級回退（Fallback）機制。
 
 🍜 [SKILL 1] Search：條件找店家 (Criteria Search)
@@ -126,7 +148,7 @@
 
 📍 [SKILL 2] Info：特定店家資訊 (Specific Info)
 [ ] Google API 封裝：建立 Maps_api.py 處理 Text Search。
-[ ] 成本控管機制 (Cost Guardrail)：設定每日 API 呼叫上限，防止異常扣款。
+[v] 成本控管機制 (Cost Guardrail)：每日 API 呼叫上限已實作於 `log/usage_tracker.py`，防止異常扣款。
 [ ] 數據欄位對齊：實作 Field Masking 抓取評分、總評論數與營業狀態。
 [ ] 照片代理服務：將 photo_reference 轉換為有效 URL 並傳遞給 UI 層。
 [ ] 智慧快取系統：實作「檢查本地 -> API 抓取 -> 回寫 JSON」的資料持久化邏輯。
