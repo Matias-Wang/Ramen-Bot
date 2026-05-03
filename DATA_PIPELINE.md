@@ -1,114 +1,150 @@
 # 拉麵店資料管線 (Ramen Data Pipeline)
 
-自動化抓取 Instagram 公開貼文、透過 LLM 萃取結構化資訊，並整合 Google Maps Geocoding 建立可查詢的拉麵店資料庫。
+自動化從 Instagram 公開貼文抓取食記、透過 Gemini LLM 批次過濾與結構化提取、再經 Google Maps Places API (New) 驗證店家狀態，最終輸出可供 Bot 使用的拉麵店 JSON 資料庫。
+
+**入口點**：`scripts/data_pipeline.py`
 
 ---
 
 ## 架構概覽
 
 ```
-IG Scraping → LLM Extraction → Geocoding → Data Validation → Cache & Persistence
+STEP 0: 初始化（Gemini + Maps API）
+  ↓
+STEP 1: 載入 instagram_data.json + 補充 posts_1.json 標題
+  ↓
+STEP 2: 批次 LLM 過濾 + 結構化提取（每批 10 筆，含 Checkpoint）
+  ↓
+STEP 3: Places API (New) 驗證（取 place_id + 座標，過濾永久歇業）
+  ↓
+STEP 4: 寫入 data/ramen_data_YYYYMMDD.json
 ```
 
 ---
 
-## 模組說明
+## 各階段說明
 
-### 1. 社交媒體資料爬取 (IG Scraping)
+### STEP 0：初始化 (Initialization)
 
-使用 [`instaloader`](https://instaloader.github.io/) 針對指定的公開 Instagram 帳號進行自動化資料抓取。
+設定 Gemini API 與 Google Maps API Key，確認環境變數齊全後啟動 Pipeline。
 
-**抓取目標：**
-- 貼文原始圖片 URL
-- 發文內容（Caption）
-- 貼文時間戳記
-
-**自動化策略：**  
-以背景排程任務（Background Job）定期執行，確保資料庫內容維持新鮮度。
+**若 `GOOGLE_MAPS_API_KEY` 未設定**，STEP 3 自動跳過，不影響 STEP 2 輸出。
 
 ---
 
-### 2. AI 結構化內容提取 (LLM Extraction)
+### STEP 1：載入與補充 IG 資料 (Load & Enrich)
 
-將抓取到的貼文文案送至 Gemini 等大型語言模型進行語意解析，從感性文案中精確提取結構化欄位。
+從 `data/instagram_data.json` 讀取 IG 爬蟲彙整資料，並補充 `data/media/posts_1.json` 中的貼文標題（`title`）作為描述來源。
 
-**提取欄位：**
+**資料來源**：
+- `data/instagram_data.json`：IG 爬蟲主輸出（含 `id`、`image_url`、`description`）
+- `data/media/posts_1.json`：原始貼文資料，用於補充 `description` 為空的項目
+
+**輸出**：補充描述後的 IG 資料 list，供 STEP 2 使用。
+
+---
+
+### STEP 2：批次 LLM 過濾 + 結構化提取 (LLM Extraction)
+
+將 IG 貼文以每批 10 筆送入 Gemini，判斷是否為拉麵食記並提取結構化欄位。
+
+**提取欄位**：
 | 欄位 | 說明 | 範例 |
 |------|------|------|
-| `name` | 店名 | 麵屋武藏 |
-| `address` | 地址 | 台北市大安區... |
-| `tags` | 口味標籤 | 豚骨、二郎系、沾麵 |
+| `is_ramen` | 是否為拉麵食記 | `true / false` |
+| `name` | 店家名稱 | `辣麻味噌沾麵 鬼金棒` |
+| `location` | 台北市行政區 | `台北市中山區` |
+| `style` | 口味標籤（擇一）| `豚骨 / 雞白湯 / 醬油 / 味噌 / 煮干 / 魚介 / 鹽味 / 二郎系 / 家系 / 沾麵 / 其他 / 限定` |
+| `price_range` | 價位範圍 | `250-350` |
+| `rating` | 評分（1-5）| `4.2` |
+| `features` | 特色標籤 list | `["超辣味噌湯頭", "角煮"]` |
+| `description` | 100 字內精簡描述 | 中文敘述 |
 
-**格式標準化：**  
-所有 AI 提取結果統一轉換為 `ramen_data.json` 定義的 JSON schema，確保下游模組相容性。
+**Checkpoint 機制**：
+- 每次 STEP 2 完成後將結果寫入 `data/ramen_data_checkpoint.json`
+- 再次執行時若 checkpoint 存在，直接載入跳過 LLM 處理，節省 API 費用
+- 若需重新處理，手動刪除 checkpoint 檔案即可
 
----
-
-### 3. 地理座標強化與驗證 (Geocoding)
-
-呼叫 Google Maps Platform 的 [Geocoding API](https://developers.google.com/maps/documentation/geocoding)，對每一筆地址資料進行座標轉換。
-
-**核心流程：**
-1. 將 LLM 提取的文字地址作為查詢輸入
-2. 取得精確經緯度座標（`lat` / `lng`）
-3. 記錄唯一識別碼 `place_id`
-
-**用途：**  
-座標資料為「附近店家搜尋」功能的必要索引欄位，支援未來的地理空間查詢。
+**批次間隔**：每批處理後 `sleep(10)` 秒，避免觸發 Gemini API 速率限制。
 
 ---
 
-### 4. 資料一致性校驗 (Data Consistency Check)
+### STEP 3：Places API (New) 驗證 (Geocoding & Validation)
 
-專屬的資料庫健康檢查腳本，防止因 LLM 幻覺或同名店家導致的資料錯誤。
+對每筆提取出的拉麵店呼叫 Google Maps Places API (New) Text Search，驗證店家真實狀態並補充地理資料。
 
-**比對邏輯：**  
-- 計算 IG 原始地址與 Google Maps 回傳標準地址的字元相似度
-- 若落差超過 **50%**，自動標記為異常（`status: "flagged"`）
+**Field Masking**（僅請求必要欄位）：
+```
+places.id, places.businessStatus, places.location, places.formattedAddress
+```
 
-**人工介入機制：**  
-所有被標記的異常資料須經人工審查後方可寫入正式資料庫，有效規避同名店家造成的搜尋錯誤。
+**處理邏輯**：
+1. 以 `{location} {name} 拉麵` 作為查詢文字
+2. 取得 `place_id`、`businessStatus`、`coordinates`、`formattedAddress`
+3. 若 `businessStatus == "CLOSED_PERMANENTLY"` → 跳過，不納入輸出
+4. 其他狀態（含 `OPERATIONAL`）→ 更新欄位後納入
 
----
-
-### 5. 快取回寫與持久化 (Cache & Persistence)
-
-將驗證後的乾淨資料回寫至 `data/ramen_data.json`，並實作 TTL（Time-To-Live）快取機制控制 API 請求頻率。
-
-**更新策略：**
-
-| 資料類型 | 有效期 |
-|----------|--------|
-| 一般店家資料 | 7 天 |
-| 近期新增 / 異動 | 24 小時 |
-
-過期資料才重新觸發 API 請求，避免不必要的 quota 消耗。
-
-**UI 整合：**  
-`flex_handler.py` 可直接讀取 `ramen_data.json` 中的所有新增欄位，用於 LINE Bot Flex Message 的 UI 渲染。
+**批次間隔**：每筆處理後 `sleep(0.5)` 秒，控管 API 呼叫頻率。
 
 ---
 
-## 資料欄位結構 (`ramen_data.json`)
+### STEP 4：寫入輸出 (Output)
+
+將驗證後的乾淨資料寫入 `data/ramen_data_YYYYMMDD.json`（含日期戳記）。
+
+**後續手動步驟**：確認輸出正確後，將檔案重命名/複製至 `data/ramen_data.json` 供 Bot 使用。
+
+---
+
+## 輸出資料結構 (`ramen_data.json` 欄位)
 
 ```json
 {
-  "id": "unique_shortcode",
-  "name": "店名",
-  "address": "地址（LLM 提取）",
-  "address_normalized": "地址（Google Maps 標準化）",
+  "id": "貼文 media_id（IG 唯一識別碼）",
+  "name": "店家名稱",
+  "location": "台北市行政區",
+  "address": "Google Maps 標準化地址",
+  "coordinates": {
+    "lat": 25.0493628,
+    "lng": 121.5211399
+  },
+  "style": "口味標籤",
+  "price_range": "250-350",
+  "rating": 4.1,
+  "user_ratings_total": 3129,
+  "features": ["特色1", "特色2"],
+  "description": "100字內中文描述",
+  "image_url": "IG 原始圖片 URL",
+  "map_url": "Google Maps 分享連結",
+  "social_links": [
+    {"label": "我的 IG", "url": "https://www.instagram.com/p/{shortcode}/"},
+    {"label": null, "url": null},
+    {"label": null, "url": null}
+  ],
   "place_id": "ChIJ...",
-  "lat": 25.0330,
-  "lng": 121.5654,
-  "tags": ["豚骨", "二郎系"],
-  "caption": "原始貼文內容",
-  "image_url": "https://...",
-  "posted_at": "2025-01-01T12:00:00Z",
-  "status": "verified",
-  "cached_at": "2025-01-01T12:00:00Z",
-  "ttl_hours": 168
+  "last_updated": "2026-04-26T12:00:00.000000"
 }
 ```
+
+**欄位來源對照**：
+| 欄位 | 來源 |
+|------|------|
+| `id`, `image_url`, `social_links[0]` | IG 爬蟲（STEP 1） |
+| `name`, `location`, `style`, `features`, `description` | Gemini LLM（STEP 2） |
+| `place_id`, `coordinates`, `address` | Places API New（STEP 3） |
+| `rating`, `user_ratings_total`, `last_updated` | InfoSkill 執行時回寫 |
+
+---
+
+## 快取回寫策略（Bot 執行期間）
+
+`data/ramen_data.json` 在 Bot 執行過程中也會被 `InfoSkill` 動態更新：
+
+| 條件 | 處理方式 |
+|------|----------|
+| 無 `place_id` | 觸發 Places API Text Search，回寫欄位 |
+| `last_updated` 超過 7 天 | 觸發 Places API Text Search，更新評分與照片 |
+| 資料新鮮（7 天以內）| 直接使用本地快取，不呼叫 API |
 
 ---
 
@@ -116,8 +152,28 @@ IG Scraping → LLM Extraction → Geocoding → Data Validation → Cache & Per
 
 | 類別 | 工具 |
 |------|------|
-| IG 爬蟲 | Python · `instaloader` |
-| LLM 提取 | Google Gemini API |
-| 地理編碼 | Google Maps Geocoding API |
-| 資料儲存 | JSON (file-based cache) |
+| IG 爬蟲 | Python · `instaloader`（`scripts/ig_scraper.py`） |
+| LLM 提取 | Google Gemini API（`google-generativeai`） |
+| Maps 驗證 | Google Maps Places API (New)（`requests` 直接呼叫） |
+| 資料儲存 | JSON（本地檔案）|
 | UI 渲染 | `flex_handler.py` · LINE Flex Message |
+
+---
+
+## 執行方式
+
+```bash
+# 確保 .env 已設定 GEMINI_API_KEY 與 GOOGLE_MAPS_API_KEY
+python scripts/data_pipeline.py
+```
+
+**前置條件**：
+1. `data/instagram_data.json` 已存在（由 `ig_scraper.py` 產生）
+2. `.env` 已填入所需 API Key
+
+**重新處理**（忽略 checkpoint）：
+```bash
+# 刪除 checkpoint 後重新執行
+del data\ramen_data_checkpoint.json
+python scripts/data_pipeline.py
+```

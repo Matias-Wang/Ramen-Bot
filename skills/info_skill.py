@@ -1,41 +1,75 @@
 import json
 import os
 import datetime
+from typing import Optional
+
 from services.google_maps import GoogleMapsService
+
+RED = '\033[91m'
+GREEN = '\033[92m'
+RESET = '\033[0m'
 
 DATA_PATH = os.path.join('data', 'ramen_data.json')
 
+
 class InfoSkill:
-    def __init__(self):
+    """
+    特定店家資訊技能模組，具備 7 天 TTL 本地快取機制。
+    """
+
+    def __init__(self) -> None:
         self.gmaps_service = GoogleMapsService()
 
-    def _load_data(self):
+    def _load_data(self) -> list:
+        """
+        從本地 JSON 資料庫讀取所有店家資料。
+
+        Returns
+        -------
+        list
+            店家資料清單，讀取失敗時回傳空清單。
+        """
         try:
             with open(DATA_PATH, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             return []
 
-    def _save_data(self, data):
+    def _save_data(self, data: list) -> None:
+        """
+        將店家資料清單寫回本地 JSON 資料庫。
+
+        Parameters
+        ----------
+        data : list
+            要寫入的店家資料清單。
+        """
         try:
             with open(DATA_PATH, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"Error saving data: {e}")
+            print(f"{RED}ERROR: 寫入資料庫失敗: {e}{RESET}")
 
-    def get_shop_info(self, shop_name, location=""):
+    def get_shop_info(self, shop_name: str, location: str = "") -> Optional[dict]:
         """
-        獲取店家資訊，具備快取機制。
-        1. 檢查本地資料庫
-        2. 若無 place_id 或資料過舊，呼叫 Google Maps API
-        3. 回寫本地資料庫
+        取得店家資訊，具備 7 天 TTL 快取機制。
+
+        Parameters
+        ----------
+        shop_name : str
+            目標店家名稱。
+        location : str, optional
+            店家所在區域，用於縮小搜尋範圍。
+
+        Returns
+        -------
+        Optional[dict]
+            店家資料字典，若查無資料則回傳 None。
         """
         all_shops = self._load_data()
-        
-        # 尋找本地店家
+
         target_shop = next((s for s in all_shops if s['name'] == shop_name), None)
-        
-        # 判斷是否需要更新 (若無 place_id 或超過 7 天)
+
         needs_update = False
         if not target_shop:
             needs_update = True
@@ -49,7 +83,7 @@ class InfoSkill:
             needs_update = True
 
         if needs_update:
-            print(f"Fetching fresh data for {shop_name} from Google Maps...")
+            print(f"{GREEN}STEP 2: 從 Google Maps 取得 {shop_name} 的最新資料{RESET}")
             details = self.gmaps_service.get_shop_details(shop_name, location)
 
             if details:
@@ -66,7 +100,6 @@ class InfoSkill:
                 if target_shop:
                     target_shop.update(new_info)
                 else:
-                    # 如果原本不在資料庫，新增一筆 (這裡可能需要更多欄位，暫以 details 為主)
                     new_info["location"] = location
                     new_info["style"] = "未知"
                     all_shops.append(new_info)
@@ -74,12 +107,12 @@ class InfoSkill:
 
                 self._save_data(all_shops)
             else:
-                print(f"Could not find shop details for {shop_name}")
+                print(f"{RED}STEP 2 ERROR: 找不到店家詳細資訊 {shop_name}{RESET}")
 
         return target_shop
 
+
 if __name__ == "__main__":
-    # 測試
     skill = InfoSkill()
     info = skill.get_shop_info("辣麻味噌沾麵 鬼金棒 中山店", "中山區")
     print(f"Final Info: {info}")

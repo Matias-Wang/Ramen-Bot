@@ -1,4 +1,4 @@
-# RAMEN_BOT_PROJECT_SPEC (v3.1)
+# RAMEN_BOT_PROJECT_SPEC (v3.2)
 
 ## 核心設計哲學 (Core Philosophy)
 本專案不僅是一個聊天機器人，而是一個具備「意圖識別、即時數據、專業知識」三層架構的 AI Agent。系統核心採用 Agentic Router (意圖分發模型)，將需求工具化 (Skill-based)，確保功能擴充時的解耦與穩定性。
@@ -6,7 +6,7 @@
 ---
 
 ## 系統架構：意圖分發模型 (Agentic Router)
-系統採用「中樞大腦 + Skill」模式，將使用者輸入經由核心分發至對應技能模組：
+系統採用「主要Agent + Skill」模式，將使用者輸入經由核心分發至對應技能模組：
 
 ### 意圖分類邏輯 (Intent Classification)
 |意圖標籤 (Intent)|觸發條件|對應技能模組|
@@ -16,45 +16,57 @@
 |KNOWLEDGE_QUERY|拉麵流派、點餐禮儀等百科問答|Knowledge Skill|
 
 ### 系統架構
-```Bash
-[User Input] 
+```
+[User Input via LINE]
       |
-[CORE] Router Agent (意圖分發)
+[STEP 1] AgentRouter.dispatch() — Gemini 解析意圖
+      | intent_data: {intent, location, style, shop_name, ui_tag}
       |
-      +-- [SKILL 1] Search (條件搜尋)
+[STEP 2] Skill 執行
+      +-- SEARCH_BY_CRITERIA → filter_ramen_data() → [shop list]
+      |       - Geocoding 取座標 → Haversine 半徑 5km 過濾
+      |       - 無座標則字串模糊比對 fallback
       |
-      +-- [SKILL 2] Info (特定查詢)
+      +-- GET_SPECIFIC_INFO  → InfoSkill.get_shop_info() → [shop]
+      |       - 本地快取優先（7天 TTL）
+      |       - 過期則呼叫 Places API (New)
       |
-      +-- [SKILL 3] Knowledge (知識百科)
+      +-- KNOWLEDGE_QUERY    → 回傳「百科功能開發中」訊息
+      |       (RAG 系統尚在開發)
       |
-[CORE] Flex Handler (UI 渲染輸出)
+[STEP 3] generate_recommendations() — asyncio 並行 Gemini 生成推薦文
+      |
+[STEP 4] assemble_carousel() — flex_handler 組裝 LINE Flex Carousel
+      |
+[LINE Flex Message Response]
 ```
 
 ---
 
-##　技能開發規範 (Skill Specifications)
-### Search Skill (條件搜尋)
-- 數據源: 
-    1. 本地 `ramen_data.json`。
-    2. Gecoding API。
+## 技能開發規範 (Skill Specifications)
 
-- 核心邏輯：判
-    * 斷語意的篩選條件進行比對
-        1. 篩選條件為口味、風格：本地資料庫直接模糊比對。
-        2. 篩選條件為地區、地理位置相關：先進行gecoding轉換，再經緯度做比對。。
-    *透過 asyncio 並行呼叫 LLM 產生推薦語。
+### Search Skill (條件搜尋) — `skills/Search_skill.py`
+- **數據源**：本地 `data/ramen_data.json` + Geocoding API
+- **核心邏輯**：
+    1. 口味比對：`target_style in shop["style"]` 模糊比對
+    2. 地區比對（優先序）：
+       - 有座標 → Geocoding 取目標座標 → Haversine 計算距離 → 5km 以內
+       - 無座標 → 字串去除「市/區/縣」後模糊比對 fallback
+    3. 結果依 `distance_km` 排序（若有座標）
+- **推薦文生成**：`asyncio.gather` 並行呼叫 Gemini，最多 3 筆
 
-### Info Skill (即時數據增強)
-- 數據源：Google Places API (New)。
+### Info Skill (即時數據增強) — `skills/info_skill.py`
+- **數據源**：本地快取 + Google Places API (New)
+- **快取邏輯**：
+    1. 檢查本地是否有 `place_id` 且 `last_updated` 在 7 天以內
+    2. 若需更新 → Text Search 取得 `place_id`、評分、評論數、照片
+    3. 更新後回寫 `ramen_data.json`
+- **Field Masking**：`id, displayName, rating, userRatingCount, formattedAddress, photos`
 
-- 工具化流程:
-    1. Text Search：獲取唯一 place_id。
-    2. Place Details：抓取評分 (Rating)、評論數及營業狀態。
-    3. Media Proxy：將 Google 照片編號轉換為符合 LINE 規範的 HTTPS URL。
-
-### Knowledge Skill (RAG 知識庫)
-- 數據源：專業拉麵知識文本。
-- 技術棧：整合向量資料庫（如 ChromaDB）進行語義檢索 (Vector Search)。
+### Knowledge Skill (RAG 知識庫) — 🚧 開發中
+- **數據源**：專業拉麵知識文本
+- **技術棧**：整合向量資料庫（如 ChromaDB）進行語義檢索 (Vector Search)
+- **現況**：router 已預留 KNOWLEDGE_QUERY 分支，回覆佔位訊息
 
 ---
 
@@ -62,13 +74,13 @@
 
 ### LINE Webhook 逾時應對 (1s Limit)
 - LINE 伺服器要求 Webhook 必須在 1 秒內回應。為了解決 AI 與地圖 API 呼叫的延遲問題，本系統實施：
-- 快取優先策略 (Cache-First)：對 API 數據實施 24 小時至 7 天的快取機制，減少重複請求。
-- 預處理機制：在背景完成 IG 數據採集與地址座標化 (Geocoding)，確保查詢時不需即時等待數據處理。
+- **快取優先策略 (Cache-First)**：對 API 數據實施 7 天的快取機制，減少重複請求。
+- **預處理機制**：透過 `scripts/data_pipeline.py` 離線完成 IG 數據採集與座標化，確保查詢時不需即時等待。
 
 ### 成本控管與效能限制 (Cost Guardrail)
-- Field Masking：在呼叫 Google Places API 時，僅請求必要欄位（如 places.rating），有效降低 API 消耗支出。
-- 圖片優化：設定 maxHeightPx 為 800px，確保圖片大小適合行動裝置載入且符合 LINE Flex Message 比例。
-- 每日用量追蹤器 (Daily Usage Tracker)：實作 `log/usage_tracker.py`，在每次呼叫外部 API 或 LLM 前強制執行配額檢查。
+- **Field Masking**：呼叫 Google Places API 時，僅請求必要欄位，有效降低 API 消耗支出。
+- **圖片優化**：設定 `maxHeightPx` 為 800px，符合 LINE Flex Message 比例規範。
+- **每日用量追蹤器 (Daily Usage Tracker)**：`usage_tracker.py` 在每次呼叫外部 API 或 LLM 前執行配額檢查。
 
   **追蹤範圍與上限：**
   | 追蹤鍵值 | 涵蓋呼叫 | 每日上限 |
@@ -80,82 +92,90 @@
   **運作邏輯：**
   1. 讀取 `log/usage.json`，比對 `date` 欄位。
   2. 若日期不是當天 → 所有計數歸零、更新日期。
-  3. 若計數已達上限 → 印出錯誤訊息並阻擋呼叫（Google Maps / LLM），LINE 回覆仍發送但記錄扣點。
+  3. 若計數已達上限 → 印出錯誤訊息並阻擋呼叫，LINE 回覆仍發送。
   4. 正常情況 → 計數 +1 並寫回 JSON；LLM 呼叫額外記錄 `token_consumed`。
   5. 追蹤器本身若發生例外 → 放行正常流程，不因追蹤錯誤影響服務。
 
   **相關檔案：**
   - `log/usage.json`：每日用量資料，可直接開啟查看。
-  - `log/usage_tracker.py`：提供 `check_and_increment(key)` 與 `record_tokens(tokens)` 兩支函式。
+  - `usage_tracker.py`：提供 `check_and_increment(key)` 與 `record_tokens(tokens)` 兩支函式。
 
 ### 數據一致性校驗 (Data Integrity)
-- 自動化健康檢查：建立 CLI 工具比對本地地址與 Google 地圖回傳地址的精確度，防止同名店家的誤判。
-- 型別安全渲染：flex_handler.py 嚴格執行索引配對，確保推薦文案與店家位置精確對齊，禁止生成空盒子 UI。
+- **Pipeline 驗證**：`data_pipeline.py` Stage 3 呼叫 Places API (New) 驗證店家是否仍在營業，過濾 `CLOSED_PERMANENTLY` 店家。
+- **型別安全渲染**：`flex_handler.py` 嚴格執行索引配對，確保推薦文案與店家位置精確對齊，禁止生成空盒子 UI。
 
 ---
 
 ## 目錄結構 (Directory Structure)
 
-```Plaintext
-/my_ramen_bot
-├── app.py                 # 入口管理
-├── agent_router.py        # [CORE] 意圖分發大腦
-├── flex_handler.py        # [CORE] UI 渲染引擎
-├── /skills
-│   ├── Search_skill.py # [SKILL 1]
-│   ├── info_skill.py      # [SKILL 2]
-│   └── knowledge_skill.py # [SKILL 3]
-├── /services
-│   └── google_maps.py     # 外部 API 通訊
-├── /data
-│   └── ramen_data.json    # 本地資料庫與 API 快取
-├── /log
-│   ├── usage.json         # 每日 API / LLM 用量記錄
-│   └── usage_tracker.py   # 配額檢查與 token 累計工具
-├── /script
-│   └── ig_scraper.py      # 個人公開IG資料撈取腳本
-├── processor.py           # 資料處理邏輯
-├── prompt.py              # LLM promt存放處
-└── .env                   # 密鑰管理
+```
+Ramen-Bot/
+├── app.py                  # 入口管理（LINE_TAG 切換正式/測試模式）
+├── agent_router.py         # [CORE] 意圖分發大腦
+├── flex_handler.py         # [CORE] UI 渲染引擎
+├── prompts.py              # LLM Prompt 存放處
+├── usage_tracker.py        # 每日配額檢查與 token 累計
+├── processor.py            # 資料處理邏輯（預留）
+├── skills/
+│   ├── Search_skill.py     # [SKILL 1] 條件搜尋 + 非同步推薦文生成
+│   └── info_skill.py       # [SKILL 2] 特定店家即時資訊 + 7 天快取
+├── services/
+│   └── google_maps.py      # Google Maps API 統一封裝
+│                           #   - Geocoding API (get_latlng)
+│                           #   - Places API New (get_shop_details)
+│                           #   - Media Proxy (get_photo_url)
+├── scripts/
+│   ├── data_pipeline.py    # 資料清洗 Pipeline（IG → LLM → Maps → JSON）
+│   ├── ig_scraper.py       # Instagram 公開帳號資料爬取腳本
+│   └── update_api_data.py  # 批次更新資料庫 API 資料（規劃中）
+├── data/
+│   ├── ramen_data.json             # 主資料庫（bot 查詢使用）
+│   ├── ramen_data_template.json    # 欄位格式範本
+│   ├── ramen_data_checkpoint.json  # Pipeline Stage 2 中斷點備份
+│   ├── instagram_data.json         # IG 爬蟲彙整輸出
+│   ├── media/                      # IG 原始爬蟲資料（posts/profile/stories）
+│   └── data_cleaning_rule.md       # 資料清洗規則說明
+├── log/
+│   └── usage.json          # 每日 API / LLM 用量紀錄
+└── .env                    # 密鑰管理（不納入版控）
 ```
 
+---
 
 ## 研發進度追蹤 (R&D Progress Checklist)
-1. 研發進度追蹤 (Progress Checklist)
+
 🟢 [CORE] 共用核心功能 (Shared Modules)
-[v] 環境基礎建設：.env 配置、Gemini API Key 串接。
-[v] 基礎意圖解析：解析 location、style 並決定 ui_tag。
-[v] Flex 渲染引擎：flex_handler.py 字典操作邏輯開發完成。
-[v] 動態 UI 邏輯：1~3 個並排社群按鈕自動伸縮與防錯（避免空盒子）。
-[v] 推薦文配對：實作 enumerate 索引確保 AI 評論與店家位置精確對齊。
-[ ] 分發器升級：擴展 agent_router.py 以支援三種 Skill 的自動切換。
-[ ] Google API 封裝：建立 services/google_maps_api.py 統一處理 Text Search 與 Geocoding。
-[ ] 全局錯誤處理：實作各 Skill 失敗時的降級回退（Fallback）機制。
-[ ] 分發器升級：擴展 agent_router.py 以支援三種 Skill 的自動切換。
-[ ] 非同步應對 (Async Handling)：實作防止 LINE Webhook 逾時的預處理機制。
-[v] 日誌與追蹤 (Logging & Trace)：實作每日 API / LLM 用量追蹤器（`log/usage_tracker.py`），涵蓋 Google Maps、Gemini、LINE API 呼叫次數與 token 消耗量，並設有每日上限保護機制。
-[ ] 全局錯誤處理：實作各 Skill 失敗時的降級回退（Fallback）機制。
+- [v] 環境基礎建設：`.env` 配置、Gemini API Key 串接。
+- [v] 基礎意圖解析：解析 `location`、`style`、`shop_name`、`ui_tag` 並分發。
+- [v] Flex 渲染引擎：`flex_handler.py` 字典操作邏輯開發完成。
+- [v] 動態 UI 邏輯：1~3 個並排社群按鈕自動伸縮與防錯（避免空盒子）。
+- [v] 推薦文配對：`enumerate` 索引確保 AI 評論與店家位置精確對齊。
+- [v] 分發器升級：`agent_router.py` 支援三種 Skill 的自動切換（含 KNOWLEDGE_QUERY 佔位）。
+- [v] Google API 封裝：`services/google_maps.py` 統一處理 Geocoding、Text Search、Media。
+- [v] 日誌與追蹤：每日 API / LLM 用量追蹤器（`usage_tracker.py`）。
+- [ ] 全局錯誤處理：實作各 Skill 失敗時的降級回退（Fallback）機制。
+- [ ] 非同步應對 (Async Handling)：實作防止 LINE Webhook 逾時的非阻塞處理機制。
 
 🍜 [SKILL 1] Search：條件找店家 (Criteria Search)
-[v] 資料結構定義：本地 ramen_data.json 欄位規範定案。
-[v] 本地篩選邏輯：地區（模糊比對）與口味關鍵字過濾實作完成。
-[v] 推薦文並行生成：asyncio 並行呼叫 Gemini 產生每間店的專屬短評。
-[v] 多筆輪播組裝：將篩選結果轉化為 carousel 格式輸出。
-[ ] IG 數據採集 (Data Scraping)：開發腳本從指定公開 IG 帳號撈取貼文圖片與內文。
-[ ] AI 內容提取 (LLM Extraction)：利用 LLM 從 IG 內文自動提取「店名、地址、口味標籤」並整理至 JSON。
-[ ] 地址校驗與編碼 (Geocoding)：呼叫 Maps API 將 IG 地址轉為座標，並獲取 place_id。
-[ ] 數據一致性校驗：開發腳本比對 IG 資訊與 Google 回傳資訊的準確性。
+- [v] 資料結構定義：本地 `ramen_data.json` 欄位規範定案。
+- [v] 本地篩選邏輯：地理經緯度比對（Haversine 5km）與字串模糊比對 fallback。
+- [v] 推薦文並行生成：`asyncio` 並行呼叫 Gemini 產生每間店的專屬短評。
+- [v] 多筆輪播組裝：將篩選結果轉化為 carousel 格式輸出。
+- [v] IG 數據採集：`scripts/ig_scraper.py` 爬取公開 IG 帳號，輸出至 `instagram_data.json`。
+- [v] AI 內容提取：`data_pipeline.py` Stage 2 批次 LLM 提取店名、地區、口味標籤。
+- [v] 地址校驗與編碼：`data_pipeline.py` Stage 3 呼叫 Places API (New) 取得座標與 `place_id`。
+- [ ] 數據一致性校驗：開發腳本比對 IG 地址與 Google 回傳地址的字元相似度（50% 閾值）。
 
 📍 [SKILL 2] Info：特定店家資訊 (Specific Info)
-[ ] Google API 封裝：建立 Maps_api.py 處理 Text Search。
-[v] 成本控管機制 (Cost Guardrail)：每日 API 呼叫上限已實作於 `log/usage_tracker.py`，防止異常扣款。
-[ ] 數據欄位對齊：實作 Field Masking 抓取評分、總評論數與營業狀態。
-[ ] 照片代理服務：將 photo_reference 轉換為有效 URL 並傳遞給 UI 層。
-[ ] 智慧快取系統：實作「檢查本地 -> API 抓取 -> 回寫 JSON」的資料持久化邏輯。
-[ ] CLI 預處理工具：開發批次腳本補全現有資料庫所有店家的 place_id。
+- [v] Google API 封裝：`services/google_maps.py` 處理 Text Search 與照片取得。
+- [v] 成本控管機制：每日 API 呼叫上限（`usage_tracker.py`）。
+- [v] 數據欄位對齊：Field Masking 抓取評分、總評論數、地址與照片。
+- [v] 照片代理服務：`get_photo_url()` 將 `photo_name` 轉換為有效 HTTPS URL。
+- [v] 智慧快取系統：「檢查本地 → API 抓取 → 回寫 JSON」的 7 天 TTL 資料持久化。
+- [ ] CLI 預處理工具：批次補全現有資料庫所有店家的 `place_id`（`update_api_data.py` 規劃中）。
 
 📚 [SKILL 3] Knowledge：拉麵知識庫 (RAG System)
-[ ] 知識資料集收集：整理拉麵流派、麵條硬度、點餐禮儀等文字資料。
-[ ] 向量資料庫整合：選擇並整合向量資料庫（如 ChromaDB 或 Pinecone）。
-[ ] 檢索邏輯開發：實作相似度搜尋（Vector Search）以取得最相關的知識片段。
-[ ] 問答生成優化：撰寫專業拉麵大師語氣的 Prompt 進行回答合成。
+- [ ] 知識資料集收集：整理拉麵流派、麵條硬度、點餐禮儀等文字資料。
+- [ ] 向量資料庫整合：選擇並整合向量資料庫（如 ChromaDB 或 Pinecone）。
+- [ ] 檢索邏輯開發：實作相似度搜尋（Vector Search）以取得最相關的知識片段。
+- [ ] 問答生成優化：撰寫專業拉麵大師語氣的 Prompt 進行回答合成。
