@@ -111,11 +111,14 @@
 ```
 Ramen-Bot/
 ├── app.py                  # 入口管理（LINE_TAG 切換正式/測試模式）
-├── agent_router.py         # [CORE] 意圖分發大腦
-├── flex_handler.py         # [CORE] UI 渲染引擎
-├── prompts.py              # LLM Prompt 存放處
-├── usage_tracker.py        # 每日配額檢查與 token 累計
-├── processor.py            # 資料處理邏輯（預留）
+├── pytest.ini              # pytest 設定
+├── requirements.txt        # 依賴套件清單
+├── core/                   # 核心業務邏輯模組
+│   ├── agent_router.py     # [CORE] 意圖分發大腦
+│   ├── flex_handler.py     # [CORE] UI 渲染引擎
+│   ├── prompts.py          # LLM Prompt 存放處
+│   ├── usage_tracker.py    # 每日配額檢查與 token 累計
+│   └── processor.py        # 資料處理邏輯（預留）
 ├── skills/
 │   ├── Search_skill.py     # [SKILL 1] 條件搜尋 + 非同步推薦文生成
 │   └── info_skill.py       # [SKILL 2] 特定店家即時資訊 + 7 天快取
@@ -127,7 +130,12 @@ Ramen-Bot/
 ├── scripts/
 │   ├── data_pipeline.py    # 資料清洗 Pipeline（IG → LLM → Maps → JSON）
 │   ├── ig_scraper.py       # Instagram 公開帳號資料爬取腳本
+│   ├── geocode_shops.py    # 地址 Geocoding 預處理腳本
 │   └── update_api_data.py  # 批次更新資料庫 API 資料（規劃中）
+├── tests/
+│   ├── test_search_skill.py    # Haversine 距離計算、店家摘要建構
+│   ├── test_flex_handler.py    # Bubble 生成、Carousel 組裝
+│   └── test_usage_tracker.py   # 配額檢查、日期重置、Token 累加
 ├── data/
 │   ├── ramen_data.json             # 主資料庫（bot 查詢使用）
 │   ├── ramen_data_template.json    # 欄位格式範本
@@ -136,7 +144,8 @@ Ramen-Bot/
 │   ├── media/                      # IG 原始爬蟲資料（posts/profile/stories）
 │   └── data_cleaning_rule.md       # 資料清洗規則說明
 ├── log/
-│   └── usage.json          # 每日 API / LLM 用量紀錄
+│   ├── usage.json          # 每日 API / LLM 用量紀錄
+│   └── testing_result.md   # cowork從電腦版Line上的測試結果
 └── .env                    # 密鑰管理（不納入版控）
 ```
 

@@ -156,7 +156,7 @@ places.id, places.businessStatus, places.location, places.formattedAddress
 | LLM 提取 | Google Gemini API（`google-generativeai`） |
 | Maps 驗證 | Google Maps Places API (New)（`requests` 直接呼叫） |
 | 資料儲存 | JSON（本地檔案）|
-| UI 渲染 | `flex_handler.py` · LINE Flex Message |
+| UI 渲染 | `core/flex_handler.py` · LINE Flex Message |
 
 ---
 

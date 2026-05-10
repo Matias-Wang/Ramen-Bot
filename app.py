@@ -14,9 +14,9 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage, FlexSendM
 from dotenv import load_dotenv
 
 # === 外部模組匯入 ===
-from agent_router import AgentRouter
-from flex_handler import assemble_carousel
-from usage_tracker import check_and_increment
+from core.agent_router import AgentRouter
+from core.flex_handler import assemble_carousel
+from core.usage_tracker import check_and_increment
 
 # === 自定義變數 ===
 RED = '\033[91m'

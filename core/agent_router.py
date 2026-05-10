@@ -6,8 +6,8 @@ import google.generativeai as genai
 
 from skills.Search_skill import filter_ramen_data, generate_recommendations
 from skills.info_skill import InfoSkill
-from prompts import IDENTIFY_INSTRUCTION_PROMPT
-from usage_tracker import check_and_increment, record_tokens
+from core.prompts import IDENTIFY_INSTRUCTION_PROMPT
+from core.usage_tracker import check_and_increment, record_tokens
 
 RED = '\033[91m'
 GREEN = '\033[92m'

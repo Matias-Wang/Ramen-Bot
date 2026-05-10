@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any
 import googlemaps
 from dotenv import load_dotenv
 
-from usage_tracker import check_and_increment
+from core.usage_tracker import check_and_increment
 
 load_dotenv()
 

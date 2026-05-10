@@ -10,6 +10,7 @@ GEMINI.md
 
 error.log/
 log/
+.pytest_cache/
 scripts/
 development_history/
 docs/
