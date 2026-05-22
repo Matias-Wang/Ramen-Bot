@@ -6,10 +6,12 @@ from typing import Optional
 from services.google_maps import GoogleMapsService
 
 RED = '\033[91m'
+YELLOW = '\033[93m'
 GREEN = '\033[92m'
 RESET = '\033[0m'
 
 DATA_PATH = os.path.join('data', 'ramen_data.json')
+USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"
 
 
 class InfoSkill:
@@ -22,13 +24,16 @@ class InfoSkill:
 
     def _load_data(self) -> list:
         """
-        從本地 JSON 資料庫讀取所有店家資料。
+        從資料庫讀取所有店家資料。
 
         Returns
         -------
         list
             店家資料清單，讀取失敗時回傳空清單。
         """
+        if USE_FIRESTORE:
+            # TODO Phase 2: 從 Firestore ramen_shops collection 讀取
+            print(f"{YELLOW}WARNING: Firestore 後端尚未實作，降級至本地 JSON{RESET}")
         try:
             with open(DATA_PATH, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -37,13 +42,16 @@ class InfoSkill:
 
     def _save_data(self, data: list) -> None:
         """
-        將店家資料清單寫回本地 JSON 資料庫。
+        將店家資料清單寫回資料庫。
 
         Parameters
         ----------
         data : list
             要寫入的店家資料清單。
         """
+        if USE_FIRESTORE:
+            # TODO Phase 2: 更新 Firestore ramen_shops document
+            print(f"{YELLOW}WARNING: Firestore 後端尚未實作，降級至本地 JSON{RESET}")
         try:
             with open(DATA_PATH, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)

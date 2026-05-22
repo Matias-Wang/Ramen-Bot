@@ -18,6 +18,8 @@ CYAN = "\033[96m"
 MAGAENTA = "\033[95m"
 RESET = "\033[0m"
 
+USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"
+
 
 def calculate_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     """
@@ -61,6 +63,10 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         篩選後的店家列表。
     """
     print(f"{GREEN}STEP: 開始執行 Search Skill 篩選邏輯{RESET}")
+
+    if USE_FIRESTORE:
+        # TODO Phase 2: 從 Firestore ramen_shops collection 讀取所有店家
+        print(f"{YELLOW}WARNING: Firestore 後端尚未實作，降級至本地 JSON{RESET}")
 
     data_path = os.path.join("data", "ramen_data.json")
     try:

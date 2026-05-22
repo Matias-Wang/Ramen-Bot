@@ -4,10 +4,12 @@ from datetime import date
 
 # <使用者自訂變數>
 RED = "\033[91m"
+YELLOW = "\033[93m"
 GREEN = "\033[92m"
 RESET = "\033[0m"
 
 LOG_PATH = os.path.join(os.path.dirname(__file__), "log", "usage.json")
+USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"
 
 
 def _default_data() -> dict:
@@ -20,6 +22,9 @@ def _default_data() -> dict:
 
 
 def _load() -> dict:
+    if USE_FIRESTORE:
+        # TODO Phase 2: 從 Firestore config/daily_usage document 讀取
+        print(f"{YELLOW}WARNING: Firestore 後端尚未實作，降級至本地 JSON{RESET}")
     try:
         with open(LOG_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -28,6 +33,9 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
+    if USE_FIRESTORE:
+        # TODO Phase 2: 以 FieldValue.increment() 更新 Firestore config/daily_usage
+        print(f"{YELLOW}WARNING: Firestore 後端尚未實作，降級至本地 JSON{RESET}")
     os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
     with open(LOG_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)

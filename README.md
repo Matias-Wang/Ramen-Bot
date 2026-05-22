@@ -47,12 +47,17 @@
 - ✅ AI 生成推薦文（asyncio 並行生成，最多 3 筆）
 - ✅ 即時店家資料增強（Places API + 7 天 TTL 快取回寫）
 - ✅ 每日 API / LLM 用量追蹤與配額保護
+- ✅ RAG 拉麵知識庫問答（ChromaDB + Google Embedding + Gemini 生成）
+- ✅ 全局 Fallback 機制（任一 Skill 失敗均能優雅降級）
+- ✅ 非阻塞 Webhook 處理（背景 Thread，防止 LINE 1 秒逾時）
 
 ---
 
 ## 自動化 / AI / 資料處理能力
 - **AI 解析與生成**：Gemini（Google AI）處理意圖識別與推薦文生成
+- **RAG 知識庫**：ChromaDB 本地向量索引 + Google Embedding API，支援拉麵流派、禮儀等百科問答
 - **資料 Pipeline**：`scripts/data_pipeline.py` 自動化從 IG 爬蟲 → LLM 提取 → Maps 驗證 → JSON 輸出
+- **資料校驗**：`scripts/address_consistency_check.py` 比對地址一致性，`scripts/update_api_data.py` 批次補全 API 資料
 - **資料儲存**：本地 JSON 檔案作為主資料庫，支援 TTL 快取回寫
 
 ---
@@ -67,24 +72,31 @@
 ### 獨立專業技能 [SKILLS]
 1. **Search Skill** (`skills/Search_skill.py`)：地理位置 + 口味條件篩選，非同步推薦文生成。
 2. **Info Skill** (`skills/info_skill.py`)：整合 Google Maps API，7 天快取策略取得即時評分與照片。
-3. **Knowledge Skill**：拉麵百科問答系統（RAG，開發中）。
+3. **Knowledge Skill** (`skills/knowledge_skill.py`)：RAG 知識庫問答，ChromaDB 向量搜尋 + Gemini 生成。
 
 ### 目錄結構 (Directory Structure)
 ```
 Ramen-Bot/
 ├── app.py                  # 入口（LINE_TAG=1 正式 / LINE_TAG=0 本機測試）
-├── agent_router.py         # [CORE] 意圖分發大腦
-├── flex_handler.py         # [CORE] UI 渲染引擎
-├── prompts.py              # LLM Prompt 存放處
-├── usage_tracker.py        # 每日配額檢查與 token 追蹤
+├── core/
+│   ├── agent_router.py     # [CORE] 意圖分發大腦（含全局 Fallback）
+│   ├── flex_handler.py     # [CORE] UI 渲染引擎
+│   ├── prompts.py          # LLM Prompt 存放處
+│   └── usage_tracker.py    # 每日配額檢查與 token 追蹤
 ├── skills/
 │   ├── Search_skill.py     # [SKILL 1] 條件搜尋
-│   └── info_skill.py       # [SKILL 2] 特定店家資訊
+│   ├── info_skill.py       # [SKILL 2] 特定店家資訊
+│   └── knowledge_skill.py  # [SKILL 3] RAG 知識庫問答
 ├── services/
 │   └── google_maps.py      # Google Maps API 統一封裝
 ├── scripts/
-│   ├── data_pipeline.py    # 資料清洗 Pipeline
-│   └── ig_scraper.py       # Instagram 爬蟲腳本
+│   ├── data_pipeline.py            # 資料清洗 Pipeline
+│   ├── ig_scraper.py               # Instagram 爬蟲腳本
+│   ├── update_api_data.py          # 批次補全 place_id（支援 --dry-run）
+│   └── address_consistency_check.py # 地址一致性校驗（50% 閾值）
+├── knowledge/
+│   ├── ramen_category.md   # 拉麵流派知識文件
+│   └── ramen_etiquette.md  # 點餐禮儀與常見 FAQ
 ├── data/
 │   ├── ramen_data.json     # 主資料庫
 │   └── instagram_data.json # IG 原始資料
@@ -192,12 +204,13 @@ python app.py
 |------|------|
 | 語言 | Python 3.13.11 |
 | 套件管理 | UV |
-| 非同步 | asyncio |
+| 非同步 | asyncio + threading（非阻塞 Webhook） |
 | LLM | Gemini (`google-generativeai`) |
 | LINE SDK | `line-bot-sdk` |
-| Web 框架 | Flask |
+| Web 框架 | Flask（本機）/ gunicorn + Cloud Run（上線） |
 | 地圖服務 | `googlemaps`（Geocoding）、`requests`（Places API New） |
-| 資料 | JSON (`ramen_data.json`) |
+| 向量搜尋 | ChromaDB（本機）/ Firestore KNN（上線） |
+| 資料 | JSON（本機）/ Firestore（上線） |
 | 環境變數 | `python-dotenv` |
 
 ---
@@ -217,10 +230,11 @@ python app.py
 ---
 
 ## 未來優化（TODO / Future Work）
-1. **[CORE]**：完成非同步 Webhook 應對（防止 1 秒逾時）與全局 Fallback 機制。
-2. **[SKILL 1]**：實作地址字元相似度一致性校驗腳本（50% 閾值標記）。
-3. **[SKILL 2]**：開發 `update_api_data.py` 批次補全現有店家的 `place_id`。
-4. **[SKILL 3]**：完成向量資料庫 (Vector DB) 整合與 RAG 檢索開發。
+1. **[DEPLOY - Phase 1]**：Dockerfile 容器化 + GCP 專案建立（Cloud Run、Firestore、Secret Manager）。
+2. **[DEPLOY - Phase 2]**：Firestore 資料層遷移，取代本地 JSON（`ramen_shops` collection、`daily_usage` document）。
+3. **[DEPLOY - Phase 3]**：ChromaDB 向量索引遷移至 Cloud Storage，解決 Cloud Run 無持久化問題。
+4. **[DEPLOY - Phase 4]**：Cloud Run 部署 + LINE Webhook 串接正式上線。
+5. **[DEPLOY - Phase 5]**：CI/CD 自動化（推送 main 分支後自動 Build & Deploy）。
 
 ---
 

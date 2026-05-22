@@ -1,4 +1,4 @@
-# RAMEN_BOT_PROJECT_SPEC (v3.2)
+# RAMEN_BOT_PROJECT_SPEC (v3.4)
 
 ## 核心設計哲學 (Core Philosophy)
 本專案不僅是一個聊天機器人，而是一個具備「意圖識別、即時數據、專業知識」三層架構的 AI Agent。系統核心採用 Agentic Router (意圖分發模型)，將需求工具化 (Skill-based)，確保功能擴充時的解耦與穩定性。
@@ -31,8 +31,10 @@
       |       - 本地快取優先（7天 TTL）
       |       - 過期則呼叫 Places API (New)
       |
-      +-- KNOWLEDGE_QUERY    → 回傳「百科功能開發中」訊息
-      |       (RAG 系統尚在開發)
+      +-- KNOWLEDGE_QUERY    → KnowledgeSkill.answer() → [answer text]
+      |       - Google Embedding API 嵌入查詢
+      |       - ChromaDB 向量相似度搜尋（Top-3）
+      |       - Gemini 生成拉麵大師風格回答
       |
 [STEP 3] generate_recommendations() — asyncio 並行 Gemini 生成推薦文
       |
@@ -63,10 +65,16 @@
     3. 更新後回寫 `ramen_data.json`
 - **Field Masking**：`id, displayName, rating, userRatingCount, formattedAddress, photos`
 
-### Knowledge Skill (RAG 知識庫) — 🚧 開發中
-- **數據源**：專業拉麵知識文本
-- **技術棧**：整合向量資料庫（如 ChromaDB）進行語義檢索 (Vector Search)
-- **現況**：router 已預留 KNOWLEDGE_QUERY 分支，回覆佔位訊息
+### Knowledge Skill (RAG 知識庫) — `skills/knowledge_skill.py` ✅
+- **數據源**：`knowledge/` 目錄下的 `.txt` / `.md` 知識文件
+- **技術棧**：ChromaDB（本地持久化）+ Google Embedding API（`gemini-embedding-001`）
+- **核心邏輯**：
+    1. 啟動時自動掃描 `knowledge/` 目錄，切分段落（500 字元，50 字元重疊）
+    2. 呼叫 Google Embedding API 建立向量索引，持久化至 `knowledge/.chroma_db/`
+    3. 若索引已存在則直接載入，不重複建立（刪除 `.chroma_db/` 可強制重建）
+    4. 查詢時嵌入問題（`task_type=retrieval_query`），取 Top-3 相關段落
+    5. 組合 context 後交由 Gemini 以「拉麵大師」語氣生成回答
+- **Prompt**：`KNOWLEDGE_ANSWER_PROMPT`（位於 `core/prompts.py`）
 
 ---
 
@@ -121,17 +129,19 @@ Ramen-Bot/
 │   └── processor.py        # 資料處理邏輯（預留）
 ├── skills/
 │   ├── Search_skill.py     # [SKILL 1] 條件搜尋 + 非同步推薦文生成
-│   └── info_skill.py       # [SKILL 2] 特定店家即時資訊 + 7 天快取
+│   ├── info_skill.py       # [SKILL 2] 特定店家即時資訊 + 7 天快取
+│   └── knowledge_skill.py  # [SKILL 3] RAG 知識庫問答（ChromaDB + Gemini Embedding）
 ├── services/
 │   └── google_maps.py      # Google Maps API 統一封裝
 │                           #   - Geocoding API (get_latlng)
 │                           #   - Places API New (get_shop_details)
 │                           #   - Media Proxy (get_photo_url)
 ├── scripts/
-│   ├── data_pipeline.py    # 資料清洗 Pipeline（IG → LLM → Maps → JSON）
-│   ├── ig_scraper.py       # Instagram 公開帳號資料爬取腳本
-│   ├── geocode_shops.py    # 地址 Geocoding 預處理腳本
-│   └── update_api_data.py  # 批次更新資料庫 API 資料（規劃中）
+│   ├── data_pipeline.py            # 資料清洗 Pipeline（IG → LLM → Maps → JSON）
+│   ├── ig_scraper.py               # Instagram 公開帳號資料爬取腳本
+│   ├── geocode_shops.py            # 地址 Geocoding 預處理腳本
+│   ├── update_api_data.py          # 批次補全店家 place_id（支援 --dry-run）
+│   └── address_consistency_check.py # IG vs Google 地址字元相似度校驗（50% 閾值）
 ├── tests/
 │   ├── test_search_skill.py    # Haversine 距離計算、店家摘要建構
 │   ├── test_flex_handler.py    # Bubble 生成、Carousel 組裝
@@ -146,6 +156,10 @@ Ramen-Bot/
 ├── log/
 │   ├── usage.json          # 每日 API / LLM 用量紀錄
 │   └── testing_result.md   # cowork從電腦版Line上的測試結果
+├── knowledge/
+│   ├── ramen_category.md   # 拉麵口味與流派知識文件
+│   ├── ramen_etiquette.md  # 麵條硬度、點餐禮儀與常見 FAQ
+│   └── .chroma_db/         # ChromaDB 向量索引（自動生成，不納入版控）
 └── .env                    # 密鑰管理（不納入版控）
 ```
 
@@ -162,8 +176,8 @@ Ramen-Bot/
 - [v] 分發器升級：`agent_router.py` 支援三種 Skill 的自動切換（含 KNOWLEDGE_QUERY 佔位）。
 - [v] Google API 封裝：`services/google_maps.py` 統一處理 Geocoding、Text Search、Media。
 - [v] 日誌與追蹤：每日 API / LLM 用量追蹤器（`usage_tracker.py`）。
-- [ ] 全局錯誤處理：實作各 Skill 失敗時的降級回退（Fallback）機制。
-- [ ] 非同步應對 (Async Handling)：實作防止 LINE Webhook 逾時的非阻塞處理機制。
+- [v] 全局錯誤處理：`_fallback_result()` + 頂層 try/except，任何 Skill 失敗均回傳 FALLBACK intent。
+- [v] 非同步應對 (Async Handling)：`handle_message` 改為背景 `threading.Thread`，Webhook 立即返回 200。
 
 🍜 [SKILL 1] Search：條件找店家 (Criteria Search)
 - [v] 資料結構定義：本地 `ramen_data.json` 欄位規範定案。
@@ -173,18 +187,139 @@ Ramen-Bot/
 - [v] IG 數據採集：`scripts/ig_scraper.py` 爬取公開 IG 帳號，輸出至 `instagram_data.json`。
 - [v] AI 內容提取：`data_pipeline.py` Stage 2 批次 LLM 提取店名、地區、口味標籤。
 - [v] 地址校驗與編碼：`data_pipeline.py` Stage 3 呼叫 Places API (New) 取得座標與 `place_id`。
-- [ ] 數據一致性校驗：開發腳本比對 IG 地址與 Google 回傳地址的字元相似度（50% 閾值）。
+- [v] 數據一致性校驗：`scripts/address_consistency_check.py` 使用 SequenceMatcher 比對字元相似度，標記低於 50% 的店家至 `log/address_flag.json`。
 
 📍 [SKILL 2] Info：特定店家資訊 (Specific Info)
-- [v] Google API 封裝：`services/google_maps.py` 處理 Text Search 與照片取得。
+- [v] Google API 封裝：`services/ oogle_maps.py` 處理 Text Search 與照片取得。
 - [v] 成本控管機制：每日 API 呼叫上限（`usage_tracker.py`）。
 - [v] 數據欄位對齊：Field Masking 抓取評分、總評論數、地址與照片。
 - [v] 照片代理服務：`get_photo_url()` 將 `photo_name` 轉換為有效 HTTPS URL。
 - [v] 智慧快取系統：「檢查本地 → API 抓取 → 回寫 JSON」的 7 天 TTL 資料持久化。
-- [ ] CLI 預處理工具：批次補全現有資料庫所有店家的 `place_id`（`update_api_data.py` 規劃中）。
+- [v] CLI 預處理工具：`scripts/update_api_data.py` 支援 `--dry-run`，逐筆呼叫 Places API 補全 `place_id`，含每日配額保護。
 
 📚 [SKILL 3] Knowledge：拉麵知識庫 (RAG System)
-- [ ] 知識資料集收集：整理拉麵流派、麵條硬度、點餐禮儀等文字資料。
-- [ ] 向量資料庫整合：選擇並整合向量資料庫（如 ChromaDB 或 Pinecone）。
-- [ ] 檢索邏輯開發：實作相似度搜尋（Vector Search）以取得最相關的知識片段。
-- [ ] 問答生成優化：撰寫專業拉麵大師語氣的 Prompt 進行回答合成。
+- [v] 知識資料集收集：`knowledge/ramen_category.md`（拉麵流派、湯底、地方特色等）。
+- [v] 向量資料庫整合：ChromaDB 本地持久化（`knowledge/.chroma_db/`）。
+- [v] 檢索邏輯開發：Google Embedding API（`gemini-embedding-001`）向量相似度搜尋 Top-3。
+- [v] 問答生成優化：`KNOWLEDGE_ANSWER_PROMPT` 拉麵大師語氣，回答 100～200 字。
+- [v] 知識文件擴充：`knowledge/ramen_etiquette.md`（麵條硬度、點餐禮儀、常見 FAQ），索引擴充至 13 個段落。
+
+> ✅ **本地開發階段全部完成**。所有 Skill 均可在 `LINE_TAG=0` 模式下正常運作與測試。
+> 接下來進入上線規劃，從 **Phase 0 前置確認** 開始逐步執行。
+
+---
+
+## 上線規劃 (GCP + Firestore Deployment)
+
+目標架構：全面遷移至 Firestore（資料 + 向量索引），Flask App 以 gunicorn 容器化部署至 Cloud Run。
+
+### 本地 / 雲端共存策略（DATA_BACKEND 環境變數）
+
+同一份 codebase，透過 `DATA_BACKEND` 環境變數切換資料後端，兩個環境可同時維護：
+
+```
+DATA_BACKEND=local     # 本地開發（預設）→ 使用 JSON + ChromaDB
+DATA_BACKEND=firestore # Cloud Run 上線 → 使用 Firestore KNN
+```
+
+各模組的切換位置：
+| 模組 | 切換點 | Phase |
+|------|--------|-------|
+| `skills/Search_skill.py` | `filter_ramen_data()` 讀取店家 | Phase 2 |
+| `skills/info_skill.py` | `_load_data()` / `_save_data()` 快取回寫 | Phase 2 |
+| `core/usage_tracker.py` | `_load()` / `_save()` 用量讀寫 | Phase 2 |
+| `skills/knowledge_skill.py` | `__init__()` 初始化 + `answer()` KNN 查詢 | Phase 3 |
+
+> 目前 Firestore 分支均印 WARNING 並降級至本地模式（TODO 標記）。Phase 2/3 實作時填入對應 Firestore 呼叫即可。
+
+### 技術選型
+
+| 元件 | 本地開發 | GCP 上線 |
+|------|----------|----------|
+| 應用程式主機 | `python app.py`（Flask dev server） | Cloud Run + gunicorn（1 worker / 8 threads） |
+| 店家資料庫 | `data/ramen_data.json` | Firestore collection `ramen_shops` |
+| 用量追蹤 | `log/usage.json` | Firestore document `config/daily_usage` |
+| 向量索引 | ChromaDB 本地（`knowledge/.chroma_db/`） | Firestore collection `ramen_knowledge`（原生 KNN 向量搜尋） |
+| 密鑰管理 | `.env` 檔案 | Secret Manager |
+| 部署流程 | 手動啟動 | Cloud Build / GitHub Actions CI/CD |
+
+> **為何不用 ChromaDB on GCS**：ChromaDB 是檔案型資料庫，部署至 Cloud Run 每次冷啟動都需從 GCS 下載索引（數百 MB），且多 instance 寫入時有檔案鎖定衝突。Firestore 原生向量搜尋（KNN）可完全取代，架構更簡潔。
+
+### Phase 0：前置環境確認（開始前必做）
+
+> **這個 Phase 不需要寫任何 code**，只需要確認工具和帳號都到位。
+
+#### Step 1：GCP 帳號與專案
+- [v] 確認有 Google 帳號，並能登入 [console.cloud.google.com](https://console.cloud.google.com)
+- [v] 確認帳號已綁定信用卡（GCP 需付款方式，新帳號有 $300 USD 免費額度，90 天有效）
+- [v] 在 GCP Console 建立一個新專案（例如 `ramen-bot-prod`），記下 **Project ID**
+- [v] 在 `.env` 補上 `GOOGLE_CLOUD_PROJECT_ID=你的-project-id`
+
+#### Step 2：本地工具安裝
+- [v] 安裝 **Google Cloud CLI（gcloud）**：https://cloud.google.com/sdk/docs/install
+  ```bash
+  gcloud auth login          # 登入 Google 帳號
+  gcloud config set project 你的-project-id
+  ```
+- [v] 安裝 **Docker Desktop**（Windows）：https://docs.docker.com/desktop/install/windows-install/
+  - 確認安裝完後 `docker --version` 有輸出版本號 > 29.4.3
+
+#### Step 3：GCP 服務啟用
+- [v] 在 GCP Console 或用 gcloud 啟用以下 API：
+  ```bash
+  gcloud services enable run.googleapis.com
+  gcloud services enable firestore.googleapis.com
+  gcloud services enable secretmanager.googleapis.com
+  gcloud services enable artifactregistry.googleapis.com
+  ```
+
+#### Step 4：確認可以繼續
+- [v] `gcloud projects list` 能看到你的專案
+- [v] `docker ps` 不報錯（Docker 正常運行）
+- [v] ✅ 以上都完成後，告知 Claude → 開始 Phase 1
+
+---
+
+### Phase 1：容器化與基礎建設
+- [ ] 撰寫 `Dockerfile`（Python 3.13 slim base image，安裝依賴）
+  ```dockerfile
+  CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 app:app
+  ```
+  - `--workers 1`：Cloud Run 水平擴縮由平台管理，單 worker 即可
+  - `--threads 8`：支援多個 LINE Webhook 並行處理
+  - `--timeout 0`：交由 Cloud Run 管理逾時，防止 gunicorn 誤 kill 等待 AI 的 worker
+- [ ] 撰寫 `.dockerignore`（排除 `.env`、`knowledge/.chroma_db/`、`data/`、`log/`）
+- [ ] 在 GCP 建立專案，啟用 Cloud Run、Firestore、Secret Manager API
+- [ ] 將 LINE Token / Gemini Key / Maps Key 上傳至 Secret Manager
+
+### Phase 2：Firestore 資料層遷移（店家資料 + 用量追蹤）
+- [ ] 設計 Firestore 資料結構：
+  - `ramen_shops/{shop_id}`：每筆文件對應一間店（現有 JSON 欄位對齊）
+  - `config/daily_usage`：單一 document 記錄當日計數，使用 `FieldValue.increment()` 解決多 instance 競態
+- [ ] 撰寫 `scripts/migrate_to_firestore.py`：將 `ramen_data.json` 批次匯入 `ramen_shops` collection
+- [ ] 更新 `skills/Search_skill.py`：從 Firestore 讀取店家資料（取代本地 JSON）
+- [ ] 更新 `skills/info_skill.py`：快取回寫改為 `document.update()`（取代 JSON 寫檔）
+- [ ] 更新 `core/usage_tracker.py`：讀寫改為 Firestore document，`check_and_increment` 改用 Transaction
+
+### Phase 3：Firestore 向量索引（取代 ChromaDB）
+- [ ] 設計 `ramen_knowledge/{chunk_id}` collection 欄位：
+  ```
+  content   : string   // 文字段落
+  source    : string   // 來源檔名
+  embedding : vector   // 768 維向量（gemini-embedding-001 輸出維度）
+  ```
+- [ ] 在 GCP Console 或 gcloud CLI 建立向量索引（`FieldPath=embedding`，`Dimension=768`，`Measure=COSINE`）
+- [ ] 撰寫 `scripts/migrate_knowledge_to_firestore.py`：讀取 `knowledge/*.md`，切分段落，嵌入後批次寫入 Firestore
+- [ ] 更新 `skills/knowledge_skill.py`：移除 ChromaDB 依賴，改用 Firestore `find_nearest()` KNN 查詢
+- [ ] 移除 `requirements.txt` 中的 `chromadb`，新增 `google-cloud-firestore`
+
+### Phase 4：Cloud Run 部署與 LINE Webhook 串接
+- [ ] 建立 Cloud Run service，環境變數從 Secret Manager 注入
+- [ ] **設定 `min-instances=1`**：徹底解決冷啟動導致 LINE Webhook 1 秒逾時的問題（費用約 $5~10 USD/月）
+  > 未來若需降至 $0 可評估 Cloud Tasks + Push API 方案，但會大幅增加架構複雜度
+- [ ] 將 Cloud Run 服務 URL 設定至 LINE Developers Webhook URL
+- [ ] 確認 `handle_message` 的 threading 非阻塞機制在 gunicorn 環境下正常運作
+
+### Phase 5：CI/CD 自動化
+- [ ] 撰寫 `cloudbuild.yaml` 或 GitHub Actions workflow
+- [ ] 推送 `main` 分支後自動 Build → Push to Artifact Registry → Deploy to Cloud Run

@@ -6,6 +6,7 @@ import google.generativeai as genai
 
 from skills.Search_skill import filter_ramen_data, generate_recommendations
 from skills.info_skill import InfoSkill
+from skills.knowledge_skill import KnowledgeSkill
 from core.prompts import IDENTIFY_INSTRUCTION_PROMPT
 from core.usage_tracker import check_and_increment, record_tokens
 
@@ -31,6 +32,7 @@ class AgentRouter:
         )
         self.recommend_model = genai.GenerativeModel(model_name=model_name)
         self.info_skill = InfoSkill()
+        self.knowledge_skill = KnowledgeSkill()
 
     def _extract_text(self, obj: Any) -> str:
         """
@@ -77,6 +79,29 @@ class AgentRouter:
             raise ValueError('無法從回應抽出 JSON，請檢查 Gemini 輸出格式。')
         return json.loads(m.group(1).replace("'", '"'))
 
+    @staticmethod
+    def _fallback_result(message: str = "系統發生未預期的錯誤，請稍後再試。") -> dict:
+        """
+        回傳標準降級結果，供頂層例外捕捉使用。
+
+        Parameters
+        ----------
+        message : str
+            顯示給使用者的錯誤提示。
+
+        Returns
+        -------
+        dict
+            intent 為 FALLBACK 的結果字典。
+        """
+        return {
+            "intent": "FALLBACK",
+            "data": [],
+            "recommendations": [],
+            "ui_tag": "TEXT",
+            "message": message,
+        }
+
     def dispatch(self, user_text: str) -> dict:
         """
         解析使用者輸入的意圖，並分發至對應技能執行。
@@ -90,7 +115,16 @@ class AgentRouter:
         -------
         dict
             包含 intent、data、recommendations、ui_tag、message 的結果字典。
+            若所有步驟均失敗則回傳 FALLBACK intent。
         """
+        try:
+            return self._dispatch_inner(user_text)
+        except Exception as e:
+            print(f"{RED}DISPATCH CRITICAL ERROR: {e}{RESET}")
+            return self._fallback_result()
+
+    def _dispatch_inner(self, user_text: str) -> dict:
+        """dispatch 的核心邏輯，由頂層 try/except 包覆。"""
         # --- STEP 1: 意圖解析 ---
         print(f"{GREEN}STEP 1: 呼叫 Gemini 解析使用者意圖{RESET}")
         try:
@@ -109,6 +143,7 @@ class AgentRouter:
 
         # --- STEP 2: Skill 執行 ---
         print(f"{GREEN}STEP 2: 執行 Skill — {intent}{RESET}")
+        knowledge_query = intent_data.get('query') or user_text
         try:
             if intent == 'GET_SPECIFIC_INFO':
                 shop_name = intent_data.get('shop_name') or intent_data.get('location')
@@ -122,20 +157,24 @@ class AgentRouter:
             print(f"{RED}STEP 2 ERROR: {e}{RESET}")
             results = []
 
-        # --- STEP 3: 推薦文生成 ---
-        print(f"{GREEN}STEP 3: 生成推薦文{RESET}")
+        # --- STEP 3: 推薦文生成 / 知識庫回答 ---
+        print(f"{GREEN}STEP 3: 生成推薦文 / 知識庫回答{RESET}")
         recommendations = []
+        knowledge_answer = None
         try:
-            if results and intent != 'KNOWLEDGE_QUERY':
+            if intent == 'KNOWLEDGE_QUERY':
+                knowledge_answer = self.knowledge_skill.answer(
+                    knowledge_query, self.recommend_model
+                )
+            elif results:
                 recommendations = generate_recommendations(results, self.recommend_model)
         except Exception as e:
             print(f"{RED}STEP 3 ERROR: {e}{RESET}")
-            recommendations = []
 
         return {
             "intent": intent,
             "data": results,
             "recommendations": recommendations,
             "ui_tag": intent_data.get('ui_tag', 'CAROUSEL'),
-            "message": "百科功能開發中！" if intent == 'KNOWLEDGE_QUERY' else None
+            "message": knowledge_answer if intent == 'KNOWLEDGE_QUERY' else None,
         }
