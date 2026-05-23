@@ -12,6 +12,7 @@ env:
   IMAGE: app
   SERVICE: ramen-bot
   REGION: asia-east1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   deploy:
