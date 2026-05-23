@@ -140,6 +140,7 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
 | 向量搜尋 | ChromaDB（本地持久化） | Firestore KNN（`ramen_knowledge`） |
 | Embedding | Google `gemini-embedding-001`（768 維） | 同左 |
 | 密鑰管理 | `.env` | GCP Secret Manager |
+| 部署流程 | 手動啟動 | GitHub Actions（push to main → Build → Artifact Registry → Cloud Run） |
 | 非同步 | `asyncio`（推薦文並行）+ `threading`（Webhook 非阻塞） | 同左 |
 
 ---
@@ -153,6 +154,9 @@ Ramen-Bot/
 ├── .dockerignore           # 排除 .env / data/ / log/ / .chroma_db/ 等
 ├── pytest.ini              # pytest 設定
 ├── requirements.txt        # 依賴套件清單
+├── .github/
+│   └── workflows/
+│       └── deploy.yml      # CI/CD：push to main → Build → Artifact Registry → Cloud Run
 ├── core/                   # 核心業務邏輯模組
 │   ├── agent_router.py     # [CORE] 意圖分發大腦（含全局 Fallback）
 │   ├── flex_handler.py     # [CORE] UI 渲染引擎

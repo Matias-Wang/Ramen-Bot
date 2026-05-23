@@ -78,6 +78,10 @@
 ```
 Ramen-Bot/
 ├── app.py                  # 入口（LINE_TAG=1 正式 / LINE_TAG=0 本機測試）
+├── Dockerfile              # Cloud Run 容器化設定
+├── .github/
+│   └── workflows/
+│       └── deploy.yml      # CI/CD：push to main 自動部署至 Cloud Run
 ├── core/
 │   ├── agent_router.py     # [CORE] 意圖分發大腦（含全局 Fallback）
 │   ├── flex_handler.py     # [CORE] UI 渲染引擎
@@ -89,19 +93,17 @@ Ramen-Bot/
 │   └── knowledge_skill.py  # [SKILL 3] RAG 知識庫問答
 ├── services/
 │   └── google_maps.py      # Google Maps API 統一封裝
-├── scripts/
-│   ├── data_pipeline.py            # 資料清洗 Pipeline
-│   ├── ig_scraper.py               # Instagram 爬蟲腳本
-│   ├── update_api_data.py          # 批次補全 place_id（支援 --dry-run）
-│   └── address_consistency_check.py # 地址一致性校驗（50% 閾值）
+├── tests/
+│   ├── test_search_skill.py
+│   ├── test_flex_handler.py
+│   └── test_usage_tracker.py
 ├── knowledge/
 │   ├── ramen_category.md   # 拉麵流派知識文件
 │   └── ramen_etiquette.md  # 點餐禮儀與常見 FAQ
 ├── data/
-│   ├── ramen_data.json     # 主資料庫
-│   └── instagram_data.json # IG 原始資料
+│   └── ramen_data.json     # 主資料庫（本地開發）
 └── log/
-    └── usage.json          # 每日 API 用量紀錄
+    └── usage.json          # 每日 API 用量紀錄（本地開發）
 ```
 
 ### 核心模組用途
@@ -205,7 +207,7 @@ python app.py
 | 語言 | Python 3.13.11 |
 | 套件管理 | UV |
 | 非同步 | asyncio + threading（非阻塞 Webhook） |
-| LLM | Gemini (`google-generativeai`) |
+| LLM | Gemini (`google-genai`) |
 | LINE SDK | `line-bot-sdk` |
 | Web 框架 | Flask（本機）/ gunicorn + Cloud Run（上線） |
 | 地圖服務 | `googlemaps`（Geocoding）、`requests`（Places API New） |
@@ -229,12 +231,14 @@ python app.py
 
 ---
 
-## 未來優化（TODO / Future Work）
-1. **[DEPLOY - Phase 1]**：Dockerfile 容器化 + GCP 專案建立（Cloud Run、Firestore、Secret Manager）。
-2. **[DEPLOY - Phase 2]**：Firestore 資料層遷移，取代本地 JSON（`ramen_shops` collection、`daily_usage` document）。
-3. **[DEPLOY - Phase 3]**：ChromaDB 向量索引遷移至 Cloud Storage，解決 Cloud Run 無持久化問題。
-4. **[DEPLOY - Phase 4]**：Cloud Run 部署 + LINE Webhook 串接正式上線。
-5. **[DEPLOY - Phase 5]**：CI/CD 自動化（推送 main 分支後自動 Build & Deploy）。
+## 部署狀態（Deployment Status）
+| Phase | 內容 | 狀態 |
+|-------|------|------|
+| Phase 1 | Dockerfile、.dockerignore、Secret Manager | ✅ 完成 |
+| Phase 2 | Firestore 資料層（店家資料 + 用量追蹤） | ✅ 完成 |
+| Phase 3 | Firestore 向量索引（取代 ChromaDB） | ✅ 完成 |
+| Phase 4 | Cloud Run 部署 + LINE Webhook 串接 | ✅ 完成 |
+| Phase 5 | GitHub Actions CI/CD 自動化 | ✅ 完成 |
 
 ---
 
