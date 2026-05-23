@@ -2,7 +2,8 @@ import os
 from typing import Optional
 
 import chromadb
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from core.prompts import KNOWLEDGE_ANSWER_PROMPT
 from core.usage_tracker import check_and_increment, record_tokens
@@ -31,16 +32,18 @@ class KnowledgeSkill:
     若需強制重建索引，請刪除 knowledge/.chroma_db/ 目錄後重啟。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, client: genai.Client, model_name: str) -> None:
         print(f"{GREEN}STEP 0: 初始化 Knowledge Skill (RAG){RESET}")
+        self.client = client
+        self.model_name = model_name
         self.collection = None
         if USE_FIRESTORE:
-            # TODO Phase 3: 初始化 Firestore client，連接 ramen_knowledge collection
-            print(f"{YELLOW}WARNING: Firestore 向量索引尚未實作，降級至 ChromaDB 本地模式{RESET}")
+            print(f"{GREEN}STEP 0: 使用 Firestore KNN 向量搜尋模式{RESET}")
+            return
         try:
             os.makedirs(KNOWLEDGE_DIR, exist_ok=True)
-            client = chromadb.PersistentClient(path=CHROMA_DIR)
-            self.collection = client.get_or_create_collection(
+            chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
+            self.collection = chroma_client.get_or_create_collection(
                 name=COLLECTION_NAME,
                 metadata={"hnsw:space": "cosine"},
             )
@@ -121,12 +124,15 @@ class KnowledgeSkill:
         """
         embeddings = []
         for text in texts:
-            result = genai.embed_content(
+            result = self.client.models.embed_content(
                 model=EMBED_MODEL,
-                content=text,
-                task_type=task_type,
+                contents=text,
+                config=types.EmbedContentConfig(
+                    task_type=task_type,
+                    output_dimensionality=768,
+                ),
             )
-            embeddings.append(result["embedding"])
+            embeddings.append(result.embeddings[0].values)
         return embeddings
 
     def _build_index(self) -> None:
@@ -161,7 +167,7 @@ class KnowledgeSkill:
         except Exception as e:
             print(f"{RED}STEP 0 ERROR: 建立索引失敗: {e}{RESET}")
 
-    def answer(self, query: str, model: genai.GenerativeModel) -> str:
+    def answer(self, query: str) -> str:
         """
         執行 RAG 流程：嵌入查詢 → 向量檢索 → Gemini 生成回答。
 
@@ -180,8 +186,7 @@ class KnowledgeSkill:
         print(f"{GREEN}STEP 2: 執行 Knowledge Skill RAG 檢索{RESET}")
 
         if USE_FIRESTORE:
-            # TODO Phase 3: 嵌入 query 後呼叫 Firestore find_nearest() KNN 查詢
-            print(f"{YELLOW}WARNING: Firestore KNN 尚未實作，降級至 ChromaDB{RESET}")
+            return self._answer_firestore(query)
 
         if not self.collection or self.collection.count() == 0:
             return "目前知識庫尚無資料，請先在 knowledge/ 目錄放入文件後重啟系統。"
@@ -204,9 +209,72 @@ class KnowledgeSkill:
                 return "LLM 每日使用上限已達，請明天再試。"
 
             prompt = KNOWLEDGE_ANSWER_PROMPT.format(context=context, query=query)
-            response = model.generate_content(prompt)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+            )
+            if response.usage_metadata:
+                record_tokens(response.usage_metadata.total_token_count or 0)
 
-            if hasattr(response, "usage_metadata") and response.usage_metadata:
+            return response.text.strip()
+        except Exception as e:
+            print(f"{RED}STEP 3 ERROR: 生成回答失敗: {e}{RESET}")
+            return "生成回答時發生錯誤，請稍後再試。"
+
+    def _answer_firestore(self, query: str) -> str:
+        """
+        Firestore KNN 模式：嵌入查詢 → find_nearest() → Gemini 生成回答。
+
+        Parameters
+        ----------
+        query : str
+            使用者的拉麵相關問題。
+
+        Returns
+        -------
+        str
+            拉麵大師風格的回答文字。
+        """
+        import os
+        from google.cloud import firestore
+        from google.cloud.firestore_v1.vector import Vector
+        from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
+
+        try:
+            query_embedding = self._embed([query], task_type="retrieval_query")[0]
+            db = firestore.Client(
+                project=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),
+                database=os.getenv("FIRESTORE_DATABASE", "(default)"),
+            )
+            results = (
+                db.collection("ramen_knowledge")
+                .find_nearest(
+                    vector_field="embedding",
+                    query_vector=Vector(query_embedding),
+                    distance_measure=DistanceMeasure.COSINE,
+                    limit=TOP_K,
+                )
+                .get()
+            )
+            retrieved_chunks = [doc.get("content") for doc in results if doc.get("content")]
+            if not retrieved_chunks:
+                return "目前 Firestore 知識庫尚無資料，請先執行 migrate_knowledge_to_firestore.py。"
+            context = "\n\n---\n\n".join(retrieved_chunks)
+        except Exception as e:
+            print(f"{RED}STEP 2 ERROR: Firestore KNN 檢索失敗: {e}{RESET}")
+            return "知識庫查詢發生錯誤，請稍後再試。"
+
+        print(f"{GREEN}STEP 3: 使用 Gemini 生成拉麵大師回答{RESET}")
+        try:
+            if not check_and_increment("llm_gemini"):
+                return "LLM 每日使用上限已達，請明天再試。"
+
+            prompt = KNOWLEDGE_ANSWER_PROMPT.format(context=context, query=query)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+            )
+            if response.usage_metadata:
                 record_tokens(response.usage_metadata.total_token_count or 0)
 
             return response.text.strip()

@@ -1,8 +1,10 @@
 import json
+import os
 import re
 from typing import Any
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from skills.Search_skill import filter_ramen_data, generate_recommendations
 from skills.info_skill import InfoSkill
@@ -26,13 +28,10 @@ class AgentRouter:
     """
 
     def __init__(self, model_name: str) -> None:
-        self.identify_model = genai.GenerativeModel(
-            model_name=model_name,
-            system_instruction=IDENTIFY_INSTRUCTION_PROMPT
-        )
-        self.recommend_model = genai.GenerativeModel(model_name=model_name)
+        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        self.model_name = model_name
         self.info_skill = InfoSkill()
-        self.knowledge_skill = KnowledgeSkill()
+        self.knowledge_skill = KnowledgeSkill(self.client, model_name)
 
     def _extract_text(self, obj: Any) -> str:
         """
@@ -130,8 +129,14 @@ class AgentRouter:
         try:
             if not check_and_increment("llm_gemini"):
                 raise Exception("LLM 每日使用上限已達")
-            model_result = self.identify_model.generate_content(user_text)
-            if hasattr(model_result, "usage_metadata") and model_result.usage_metadata:
+            model_result = self.client.models.generate_content(
+                model=self.model_name,
+                contents=user_text,
+                config=types.GenerateContentConfig(
+                    system_instruction=IDENTIFY_INSTRUCTION_PROMPT,
+                ),
+            )
+            if model_result.usage_metadata:
                 record_tokens(model_result.usage_metadata.total_token_count or 0)
             intent_data = self._parse_intent_json(model_result)
             print(f"[DEBUG] AI 解析意圖: {intent_data}")
@@ -163,11 +168,11 @@ class AgentRouter:
         knowledge_answer = None
         try:
             if intent == 'KNOWLEDGE_QUERY':
-                knowledge_answer = self.knowledge_skill.answer(
-                    knowledge_query, self.recommend_model
-                )
+                knowledge_answer = self.knowledge_skill.answer(knowledge_query)
             elif results:
-                recommendations = generate_recommendations(results, self.recommend_model)
+                recommendations = generate_recommendations(
+                    results, self.client, self.model_name
+                )
         except Exception as e:
             print(f"{RED}STEP 3 ERROR: {e}{RESET}")
 

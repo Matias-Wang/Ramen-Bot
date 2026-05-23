@@ -4,7 +4,8 @@ import asyncio
 import re
 import math
 from typing import List, Dict, Any, Optional
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from core.prompts import RECOMMEND_PROMPT
 from services.google_maps import GoogleMapsService
 from core.usage_tracker import check_and_increment, record_tokens
@@ -65,16 +66,25 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     print(f"{GREEN}STEP: 開始執行 Search Skill 篩選邏輯{RESET}")
 
     if USE_FIRESTORE:
-        # TODO Phase 2: 從 Firestore ramen_shops collection 讀取所有店家
-        print(f"{YELLOW}WARNING: Firestore 後端尚未實作，降級至本地 JSON{RESET}")
-
-    data_path = os.path.join("data", "ramen_data.json")
-    try:
-        with open(data_path, "r", encoding="utf-8") as f:
-            all_shops = json.load(f)
-    except FileNotFoundError:
-        print(f"{RED}STEP ERROR: 找不到 {data_path} 檔案{RESET}")
-        return []
+        try:
+            from google.cloud import firestore
+            db = firestore.Client(
+                project=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),
+                database=os.getenv("FIRESTORE_DATABASE", "(default)"),
+            )
+            all_shops = [doc.to_dict() for doc in db.collection("ramen_shops").stream()]
+            print(f"{GREEN}STEP: Firestore 讀取完成，共 {len(all_shops)} 筆{RESET}")
+        except Exception as e:
+            print(f"{RED}STEP ERROR: Firestore 讀取失敗: {e}{RESET}")
+            return []
+    else:
+        data_path = os.path.join("data", "ramen_data.json")
+        try:
+            with open(data_path, "r", encoding="utf-8") as f:
+                all_shops = json.load(f)
+        except FileNotFoundError:
+            print(f"{RED}STEP ERROR: 找不到 {data_path} 檔案{RESET}")
+            return []
 
     target_location = intent_data.get("location") or ""
     target_style = intent_data.get("style") or ""
@@ -101,7 +111,7 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     for shop in all_shops:
         # 1. 口味比對 (Fuzzy Match)
-        shop_style = shop.get("style", "")
+        shop_style = shop.get("style") or ""
         match_style = not target_style or (target_style in shop_style)
 
         if not match_style:
@@ -129,13 +139,13 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             else:
                 # 店家無座標資料，則回退至字串比對
                 clean_target_loc = target_location.replace("市", "").replace("區", "").replace("縣", "")
-                shop_loc = shop.get("location", "")
+                shop_loc = shop.get("location") or ""
                 if clean_target_loc in shop_loc or shop_loc in clean_target_loc:
                     match_location = True
         else:
             # 無目標座標資料，使用字串比對
             clean_target_loc = target_location.replace("市", "").replace("區", "").replace("縣", "")
-            shop_loc = shop.get("location", "")
+            shop_loc = shop.get("location") or ""
             if clean_target_loc in shop_loc or shop_loc in clean_target_loc:
                 match_location = True
 
@@ -176,26 +186,22 @@ def build_shop_summary(shop: Dict[str, Any]) -> str:
     return summary
 
 
-def get_one_recommendation(shop_summary: str, model: Any) -> str:
+def get_one_recommendation(shop_summary: str, client: Any, model_name: str) -> str:
     """單筆推薦文生成 (同步轉非同步調用用)"""
     default = "點擊查看地圖了解更多。"
     try:
         if not check_and_increment("llm_gemini"):
             return default
         prompt = RECOMMEND_PROMPT.format(shop_summary=shop_summary)
-        recommend_result = model.generate_content(
-            prompt, generation_config={"temperature": 0.6, "max_output_tokens": 1200}
+        recommend_result = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.6, max_output_tokens=1200),
         )
-        if hasattr(recommend_result, "usage_metadata") and recommend_result.usage_metadata:
+        if recommend_result.usage_metadata:
             record_tokens(recommend_result.usage_metadata.total_token_count or 0)
 
-        def _extract_text(obj):
-            for attr in ("text", "output", "content", "candidates"):
-                if hasattr(obj, attr):
-                    return getattr(obj, attr)
-            return str(obj)
-
-        raw = _extract_text(recommend_result).strip()
+        raw = recommend_result.text.strip()
         raw = re.sub(r"```\w*\s*", "", raw).strip()
         if not raw or any(c in raw for c in ["I will", "As an AI"]):
             return default
@@ -205,18 +211,20 @@ def get_one_recommendation(shop_summary: str, model: Any) -> str:
         return default
 
 
-async def get_one_recommendation_async(shop_summary: str, model: Any):
+async def get_one_recommendation_async(shop_summary: str, client: Any, model_name: str):
     """將同步的生成過程包裝進非同步執行緒"""
-    return await asyncio.to_thread(get_one_recommendation, shop_summary, model)
+    return await asyncio.to_thread(get_one_recommendation, shop_summary, client, model_name)
 
 
-async def fetch_all_recommendations_async(summaries: List[str], model: Any):
+async def fetch_all_recommendations_async(summaries: List[str], client: Any, model_name: str):
     """並行獲取所有推薦文"""
-    tasks = [get_one_recommendation_async(s, model) for s in summaries]
+    tasks = [get_one_recommendation_async(s, client, model_name) for s in summaries]
     return await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def generate_recommendations(shops_info: List[Dict[str, Any]], model: Any, num_shops: int = 3) -> List[str]:
+def generate_recommendations(
+    shops_info: List[Dict[str, Any]], client: Any, model_name: str, num_shops: int = 3
+) -> List[str]:
     """
     對篩選出的店家生成 AI 推薦文。
 
@@ -246,11 +254,9 @@ def generate_recommendations(shops_info: List[Dict[str, Any]], model: Any, num_s
         # 若在同步環境下呼叫，則使用 asyncio.run (但在 app.py 或 processor.py 通常已是 async)
         try:
             loop = asyncio.get_running_loop()
-            # 若已有 loop，則直接 await
-            # 這裡為了通用性，若是在 script 直接跑，我們用 asyncio.run
-            results = asyncio.run(fetch_all_recommendations_async(summaries, model))
+            results = asyncio.run(fetch_all_recommendations_async(summaries, client, model_name))
         except RuntimeError:
-            results = asyncio.run(fetch_all_recommendations_async(summaries, model))
+            results = asyncio.run(fetch_all_recommendations_async(summaries, client, model_name))
             
         return [
             r if not isinstance(r, Exception) else "點擊查看地圖了解更多。"

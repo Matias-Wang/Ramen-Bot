@@ -1,7 +1,8 @@
 flask
 gunicorn
 line-bot-sdk
-google-generativeai
+google-genai
+google-cloud-firestore
 python-dotenv
 googlemaps
 chromadb

@@ -7,7 +7,6 @@ LINE_TAG = 0
 import os
 import json
 import threading
-import google.generativeai as genai
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -37,9 +36,6 @@ app = Flask(__name__)
 # 初始化 LINE Bot API 與 Webhook Handler
 line_bot_api = LineBotApi(os.getenv('LINE_CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
-
-# 設定 Gemini API Key
-genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 
 # 初始化 AgentRouter：負責意圖解析與技能分發
 router = AgentRouter(os.getenv('GEMINI_MODEL'))

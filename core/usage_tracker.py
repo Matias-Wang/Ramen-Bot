@@ -21,10 +21,25 @@ def _default_data() -> dict:
     }
 
 
+def _get_firestore_doc():
+    """Firestore config/daily_usage document 參考（lazy 初始化）。"""
+    from google.cloud import firestore
+    db = firestore.Client(
+        project=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),
+        database=os.getenv("FIRESTORE_DATABASE", "(default)"),
+    )
+    return db.collection("config").document("daily_usage"), db
+
+
 def _load() -> dict:
     if USE_FIRESTORE:
-        # TODO Phase 2: 從 Firestore config/daily_usage document 讀取
-        print(f"{YELLOW}WARNING: Firestore 後端尚未實作，降級至本地 JSON{RESET}")
+        try:
+            doc_ref, _ = _get_firestore_doc()
+            snap = doc_ref.get()
+            return snap.to_dict() if snap.exists else _default_data()
+        except Exception as e:
+            print(f"{RED}STEP ERROR: Firestore 讀取失敗: {e}{RESET}")
+            return _default_data()
     try:
         with open(LOG_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -34,8 +49,12 @@ def _load() -> dict:
 
 def _save(data: dict) -> None:
     if USE_FIRESTORE:
-        # TODO Phase 2: 以 FieldValue.increment() 更新 Firestore config/daily_usage
-        print(f"{YELLOW}WARNING: Firestore 後端尚未實作，降級至本地 JSON{RESET}")
+        try:
+            doc_ref, _ = _get_firestore_doc()
+            doc_ref.set(data)
+        except Exception as e:
+            print(f"{RED}STEP ERROR: Firestore 寫入失敗: {e}{RESET}")
+        return
     os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
     with open(LOG_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)

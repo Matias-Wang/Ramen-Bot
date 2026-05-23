@@ -23,4 +23,6 @@ knowledge/.chroma_db/
 
 # 其他開發用暫存
 temp.json
+PROGRESS.md
+backup/
 review/

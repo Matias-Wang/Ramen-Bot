@@ -32,8 +32,16 @@ class InfoSkill:
             店家資料清單，讀取失敗時回傳空清單。
         """
         if USE_FIRESTORE:
-            # TODO Phase 2: 從 Firestore ramen_shops collection 讀取
-            print(f"{YELLOW}WARNING: Firestore 後端尚未實作，降級至本地 JSON{RESET}")
+            try:
+                from google.cloud import firestore
+                db = firestore.Client(
+                    project=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),
+                    database=os.getenv("FIRESTORE_DATABASE", "(default)"),
+                )
+                return [doc.to_dict() for doc in db.collection("ramen_shops").stream()]
+            except Exception as e:
+                print(f"{RED}ERROR: Firestore 讀取失敗: {e}{RESET}")
+                return []
         try:
             with open(DATA_PATH, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -50,8 +58,20 @@ class InfoSkill:
             要寫入的店家資料清單。
         """
         if USE_FIRESTORE:
-            # TODO Phase 2: 更新 Firestore ramen_shops document
-            print(f"{YELLOW}WARNING: Firestore 後端尚未實作，降級至本地 JSON{RESET}")
+            try:
+                from google.cloud import firestore
+                db = firestore.Client(
+                    project=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),
+                    database=os.getenv("FIRESTORE_DATABASE", "(default)"),
+                )
+                batch = db.batch()
+                for shop in data:
+                    doc_id = str(shop.get("id") or shop.get("name", "unknown")).replace("/", "_")
+                    batch.set(db.collection("ramen_shops").document(doc_id), shop, merge=True)
+                batch.commit()
+            except Exception as e:
+                print(f"{RED}ERROR: Firestore 寫入失敗: {e}{RESET}")
+            return
         try:
             with open(DATA_PATH, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
