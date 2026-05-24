@@ -122,7 +122,10 @@ def get_flex_bubble(shop, recommendation=None):
         for link_obj in social_links_data[:3]:
             label = link_obj.get('label')
             url = link_obj.get('url')
+            # 過濾：無 label、無 url、非 https、或 IG 貼文 URL（/p/XXX/）
             if not label or not url or not url.startswith('https://'):
+                continue
+            if 'instagram.com/p/' in url:
                 continue
 
             social_box['contents'].append({
