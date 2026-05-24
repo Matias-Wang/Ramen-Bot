@@ -1,5 +1,6 @@
 import json
 import copy
+from urllib.parse import quote
 
 # === 1. Flex Message 基礎模板 ===
 BASE_BUBBLE_STRUCTURE = {
@@ -70,8 +71,9 @@ def get_flex_bubble(shop, recommendation=None):
     style = shop.get('style', '未知口味')
     address = shop.get('address', '暫無地址')
     rec_text = recommendation if recommendation else "點擊查看地圖了解更多。"
-    image_url = shop.get('image_url')
-    map_url = shop.get('map_url') or f"https://www.google.com/maps/search/?api=1&query={name}"
+    raw_image_url = shop.get('image_url')
+    image_url = raw_image_url if (raw_image_url and raw_image_url.startswith('https://')) else None
+    map_url = shop.get('map_url') or f"https://www.google.com/maps/search/?api=1&query={quote(name)}"
 
     body_contents = bubble['body']['contents']
     body_contents[0]['text'] = name
@@ -117,9 +119,11 @@ def get_flex_bubble(shop, recommendation=None):
         }
         
         for link_obj in social_links_data[:3]:
-            label = link_obj.get('label', '連結')
-            url = link_obj.get('url', 'https://www.instagram.com/')
-            
+            label = link_obj.get('label')
+            url = link_obj.get('url')
+            if not label or not url or not url.startswith('https://'):
+                continue
+
             social_box['contents'].append({
                 "type": "button",
                 "style": "secondary",
