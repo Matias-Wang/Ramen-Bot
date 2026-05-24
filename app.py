@@ -55,17 +55,17 @@ def callback():
     return 'OK'
 
 
-def _reply_to_line(user_text: str, reply_token: str) -> None:
+def _reply_to_line(user_text: str, user_id: str) -> None:
     """
-    在背景執行緒中處理訊息並回覆 LINE。
-    從 handle_message 提取 user_text 與 reply_token 後才啟動此函式，確保執行緒安全。
+    在背景執行緒中處理訊息並以 push_message 回覆 LINE。
+    使用 push_message 取代 reply_message，避免 reply token 在處理期間過期。
 
     Parameters
     ----------
     user_text : str
         使用者原始輸入文字。
-    reply_token : str
-        LINE reply token（有效期約 1 分鐘）。
+    user_id : str
+        LINE 使用者 ID，用於 push_message。
     """
     try:
         result = router.dispatch(user_text)
@@ -78,8 +78,8 @@ def _reply_to_line(user_text: str, reply_token: str) -> None:
         # FALLBACK：dispatch 頂層捕捉到的嚴重錯誤
         if intent == 'FALLBACK':
             check_and_increment("line_api")
-            line_bot_api.reply_message(
-                reply_token,
+            line_bot_api.push_message(
+                user_id,
                 TextSendMessage(text=result.get('message', '系統發生錯誤，請稍後再試。'))
             )
             return
@@ -87,8 +87,8 @@ def _reply_to_line(user_text: str, reply_token: str) -> None:
         # 知識庫問答
         if intent == 'KNOWLEDGE_QUERY':
             check_and_increment("line_api")
-            line_bot_api.reply_message(
-                reply_token,
+            line_bot_api.push_message(
+                user_id,
                 TextSendMessage(text=result.get('message', '知識庫查詢失敗，請稍後再試。'))
             )
             return
@@ -96,8 +96,8 @@ def _reply_to_line(user_text: str, reply_token: str) -> None:
         # 無結果 fallback
         if not data:
             check_and_increment("line_api")
-            line_bot_api.reply_message(
-                reply_token,
+            line_bot_api.push_message(
+                user_id,
                 TextSendMessage(text='找不到符合條件的拉麵店，請試著提供更多或不同的條件。')
             )
             return
@@ -107,7 +107,7 @@ def _reply_to_line(user_text: str, reply_token: str) -> None:
             carousel_contents = assemble_carousel(data, recommendations)
             flex = FlexSendMessage(alt_text='拉麵推薦', contents=carousel_contents)
             check_and_increment("line_api")
-            line_bot_api.reply_message(reply_token, flex)
+            line_bot_api.push_message(user_id, flex)
         else:
             items = [
                 f"{i+1}. {s.get('name', '不明店名')} ({s.get('location', '不明地區')} / {s.get('style', '不明口味')})"
@@ -119,18 +119,18 @@ def _reply_to_line(user_text: str, reply_token: str) -> None:
                     f"{i+1}. {r}" for i, r in enumerate(recommendations)
                 )
             check_and_increment("line_api")
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
+            line_bot_api.push_message(user_id, TextSendMessage(text=reply_text))
 
     except Exception as e:
         print(f"{RED}ERROR in _reply_to_line: {e}{RESET}")
         try:
             check_and_increment("line_api")
-            line_bot_api.reply_message(
-                reply_token,
+            line_bot_api.push_message(
+                user_id,
                 TextSendMessage(text='系統忙碌中，請稍後再試。')
             )
-        except Exception as reply_err:
-            print(f"{RED}ERROR: 回覆 LINE 失敗: {reply_err}{RESET}")
+        except Exception as push_err:
+            print(f"{RED}ERROR: 推送 LINE 訊息失敗: {push_err}{RESET}")
 
 
 @handler.add(MessageEvent, message=TextMessage)
@@ -139,10 +139,10 @@ def handle_message(event):
     LINE 訊息事件入口。立即返回（非阻塞），由背景執行緒處理 AI 邏輯與回覆。
     """
     user_text = event.message.text
-    reply_token = event.reply_token
+    user_id = event.source.user_id
     thread = threading.Thread(
         target=_reply_to_line,
-        args=(user_text, reply_token),
+        args=(user_text, user_id),
         daemon=True,
     )
     thread.start()

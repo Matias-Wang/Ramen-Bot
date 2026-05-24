@@ -235,17 +235,13 @@ class KnowledgeSkill:
         str
             拉麵大師風格的回答文字。
         """
-        import os
-        from google.cloud import firestore
         from google.cloud.firestore_v1.vector import Vector
         from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
+        from services.firestore_client import get_db
 
         try:
             query_embedding = self._embed([query], task_type="retrieval_query")[0]
-            db = firestore.Client(
-                project=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),
-                database=os.getenv("FIRESTORE_DATABASE", "(default)"),
-            )
+            db = get_db()
             results = (
                 db.collection("ramen_knowledge")
                 .find_nearest(

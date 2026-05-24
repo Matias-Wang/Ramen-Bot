@@ -22,19 +22,16 @@ def _default_data() -> dict:
 
 
 def _get_firestore_doc():
-    """Firestore config/daily_usage document 參考（lazy 初始化）。"""
-    from google.cloud import firestore
-    db = firestore.Client(
-        project=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),
-        database=os.getenv("FIRESTORE_DATABASE", "(default)"),
-    )
-    return db.collection("config").document("daily_usage"), db
+    """Firestore config/daily_usage document 參考（使用全域 singleton）。"""
+    from services.firestore_client import get_db
+    db = get_db()
+    return db.collection("config").document("daily_usage")
 
 
 def _load() -> dict:
     if USE_FIRESTORE:
         try:
-            doc_ref, _ = _get_firestore_doc()
+            doc_ref = _get_firestore_doc()
             snap = doc_ref.get()
             return snap.to_dict() if snap.exists else _default_data()
         except Exception as e:
@@ -50,7 +47,7 @@ def _load() -> dict:
 def _save(data: dict) -> None:
     if USE_FIRESTORE:
         try:
-            doc_ref, _ = _get_firestore_doc()
+            doc_ref = _get_firestore_doc()
             doc_ref.set(data)
         except Exception as e:
             print(f"{RED}STEP ERROR: Firestore 寫入失敗: {e}{RESET}")

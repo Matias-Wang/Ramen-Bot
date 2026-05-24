@@ -83,7 +83,8 @@
 
 ### LINE Webhook 逾時應對 (1s Limit)
 LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略應對：
-- **非阻塞處理**：`handle_message` 收到請求後立即啟動 `threading.Thread`，主執行緒直接返回 200，AI 邏輯在背景完成後再呼叫 `reply_message`。
+- **非阻塞處理**：`handle_message` 收到請求後立即啟動 `threading.Thread`，主執行緒直接返回 200，AI 邏輯在背景完成後再以 `push_message` 發送回覆。
+- **push_message 取代 reply_message**：reply token 僅有效約 30-60 秒；改用 `push_message(user_id, ...)` 可在 AI 邏輯完成後不受時效限制地回覆使用者。
 - **快取優先策略 (Cache-First)**：對 API 數據實施 7 天的快取機制，減少重複請求延遲。
 - **預處理機制**：透過 `scripts/data_pipeline.py` 離線完成 IG 數據採集與座標化，確保查詢時不需即時等待。
 
@@ -97,7 +98,7 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
   |---|---|---|
   | `google_maps_api` | Geocoding + Places Text Search + Places Photo（三者加總）| 100 次 |
   | `llm_gemini` | 意圖解析 + 推薦文生成（所有 Gemini 呼叫加總）| 100 次 |
-  | `line_api` | reply_message 發送次數 | 100 次 |
+  | `line_api` | push_message 發送次數 | 100 次 |
 
   **運作邏輯：**
   1. 讀取 `log/usage.json`，比對 `date` 欄位。
@@ -123,6 +124,8 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
 | `firestore` | Firestore `ramen_shops` | Firestore KNN | Cloud Run + gunicorn |
 
 各模組均在對應函式頂層以 `USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"` 判斷路徑。
+
+**Firestore Client Singleton**：`services/firestore_client.py` 提供全域單一 `firestore.Client` 實例（`get_db()`），所有模組共用同一 gRPC 連線，避免每次請求重新建立連線的高延遲（每次建立需 5-30 秒）。
 
 ---
 
@@ -167,7 +170,8 @@ Ramen-Bot/
 │   ├── info_skill.py       # [SKILL 2] 特定店家即時資訊（本地 JSON / Firestore 雙路徑）
 │   └── knowledge_skill.py  # [SKILL 3] RAG 知識庫（ChromaDB 本地 / Firestore KNN 雙路徑）
 ├── services/
-│   └── google_maps.py      # Google Maps API 統一封裝
+│   ├── google_maps.py          # Google Maps API 統一封裝
+│   └── firestore_client.py     # Firestore Client Singleton（全域共用連線）
 ├── scripts/
 │   ├── data_pipeline.py                  # 資料清洗 Pipeline（IG → LLM → Maps → JSON）
 │   ├── ig_scraper.py                     # Instagram 公開帳號資料爬取腳本

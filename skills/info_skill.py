@@ -33,11 +33,8 @@ class InfoSkill:
         """
         if USE_FIRESTORE:
             try:
-                from google.cloud import firestore
-                db = firestore.Client(
-                    project=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),
-                    database=os.getenv("FIRESTORE_DATABASE", "(default)"),
-                )
+                from services.firestore_client import get_db
+                db = get_db()
                 return [doc.to_dict() for doc in db.collection("ramen_shops").stream()]
             except Exception as e:
                 print(f"{RED}ERROR: Firestore 讀取失敗: {e}{RESET}")
@@ -59,11 +56,8 @@ class InfoSkill:
         """
         if USE_FIRESTORE:
             try:
-                from google.cloud import firestore
-                db = firestore.Client(
-                    project=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),
-                    database=os.getenv("FIRESTORE_DATABASE", "(default)"),
-                )
+                from services.firestore_client import get_db
+                db = get_db()
                 batch = db.batch()
                 for shop in data:
                     doc_id = str(shop.get("id") or shop.get("name", "unknown")).replace("/", "_")

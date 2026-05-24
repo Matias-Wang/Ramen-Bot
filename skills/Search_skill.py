@@ -1,6 +1,6 @@
 import json
 import os
-import asyncio
+import concurrent.futures
 import re
 import math
 from typing import List, Dict, Any, Optional
@@ -67,11 +67,8 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     if USE_FIRESTORE:
         try:
-            from google.cloud import firestore
-            db = firestore.Client(
-                project=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),
-                database=os.getenv("FIRESTORE_DATABASE", "(default)"),
-            )
+            from services.firestore_client import get_db
+            db = get_db()
             all_shops = [doc.to_dict() for doc in db.collection("ramen_shops").stream()]
             print(f"{GREEN}STEP: Firestore 讀取完成，共 {len(all_shops)} 筆{RESET}")
         except Exception as e:
@@ -211,29 +208,20 @@ def get_one_recommendation(shop_summary: str, client: Any, model_name: str) -> s
         return default
 
 
-async def get_one_recommendation_async(shop_summary: str, client: Any, model_name: str):
-    """將同步的生成過程包裝進非同步執行緒"""
-    return await asyncio.to_thread(get_one_recommendation, shop_summary, client, model_name)
-
-
-async def fetch_all_recommendations_async(summaries: List[str], client: Any, model_name: str):
-    """並行獲取所有推薦文"""
-    tasks = [get_one_recommendation_async(s, client, model_name) for s in summaries]
-    return await asyncio.gather(*tasks, return_exceptions=True)
-
-
 def generate_recommendations(
     shops_info: List[Dict[str, Any]], client: Any, model_name: str, num_shops: int = 3
 ) -> List[str]:
     """
-    對篩選出的店家生成 AI 推薦文。
+    對篩選出的店家並行生成 AI 推薦文。
 
     Parameters
     ----------
     shops_info : List[Dict[str, Any]]
         篩選後的店家資訊列表。
-    model : Any
-        Gemini 生成模型實例。
+    client : Any
+        Gemini client 實例。
+    model_name : str
+        Gemini 模型名稱。
     num_shops : int, optional
         要生成的店家數量，預設為 3。
 
@@ -250,18 +238,13 @@ def generate_recommendations(
 
     print(f"{GREEN}STEP: 開始並行生成 {len(selected)} 筆推薦文{RESET}")
     try:
-        # 在現有的 event loop 中執行非同步任務
-        # 若在同步環境下呼叫，則使用 asyncio.run (但在 app.py 或 processor.py 通常已是 async)
-        try:
-            loop = asyncio.get_running_loop()
-            results = asyncio.run(fetch_all_recommendations_async(summaries, client, model_name))
-        except RuntimeError:
-            results = asyncio.run(fetch_all_recommendations_async(summaries, client, model_name))
-            
-        return [
-            r if not isinstance(r, Exception) else "點擊查看地圖了解更多。"
-            for r in results
-        ]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(summaries)) as executor:
+            futures = [
+                executor.submit(get_one_recommendation, s, client, model_name)
+                for s in summaries
+            ]
+            results = [f.result() for f in futures]
+        return results
     except Exception as e:
         print(f"{RED}STEP ERROR: 推薦文流程失敗: {e}{RESET}")
         return ["點擊查看地圖了解更多。"] * len(summaries)
