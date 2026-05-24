@@ -71,8 +71,9 @@ def get_flex_bubble(shop, recommendation=None):
     style = shop.get('style', '未知口味')
     address = shop.get('address', '暫無地址')
     rec_text = recommendation if recommendation else "點擊查看地圖了解更多。"
-    raw_image_url = shop.get('image_url')
-    image_url = raw_image_url if (raw_image_url and raw_image_url.startswith('https://')) else None
+    image_url = shop.get('image_url')
+    if not (image_url and image_url.startswith('https://')):
+        image_url = None
     map_url = shop.get('map_url') or f"https://www.google.com/maps/search/?api=1&query={quote(name)}"
 
     body_contents = bubble['body']['contents']
