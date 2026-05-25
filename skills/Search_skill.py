@@ -31,6 +31,9 @@ _shops_cache_time: float = 0.0
 _geocode_cache: Dict[str, Optional[Dict[str, float]]] = {}
 _gmaps_instance: Optional[GoogleMapsService] = None
 
+# 推薦文用的 Gemini client pool（預熱 3 個獨立實例，確保並行不序列化）
+_rec_client_pool: List[Any] = []
+
 
 def _get_gmaps() -> GoogleMapsService:
     """取得全域共用的 GoogleMapsService 實例（Singleton）。"""
@@ -38,6 +41,40 @@ def _get_gmaps() -> GoogleMapsService:
     if _gmaps_instance is None:
         _gmaps_instance = GoogleMapsService()
     return _gmaps_instance
+
+
+def init_rec_client_pool(api_key: str, model_name: str, pool_size: int = 3) -> None:
+    """
+    建立並同時預熱 pool_size 個獨立 Gemini client。
+
+    需在 app 啟動時呼叫。每個 client 對應一個推薦文生成執行緒，
+    避免共用 client 的內部鎖導致序列化，同時利用預熱消除冷連線延遲。
+
+    Parameters
+    ----------
+    api_key : str
+        Gemini API 金鑰。
+    model_name : str
+        Gemini 模型名稱，用於預熱 API call。
+    pool_size : int
+        Pool 大小，預設為 3。
+    """
+    global _rec_client_pool
+
+    def _create_and_warm(key: str) -> Any:
+        c = genai.Client(api_key=key)
+        c.models.generate_content(
+            model=model_name,
+            contents="hi",
+            config=types.GenerateContentConfig(max_output_tokens=1),
+        )
+        return c
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=pool_size) as ex:
+        futures = [ex.submit(_create_and_warm, api_key) for _ in range(pool_size)]
+        _rec_client_pool = [f.result() for f in futures]
+
+    print(f"{GREEN}[STARTUP] Gemini Client Pool 初始化並預熱完成（{pool_size} 個實例）{RESET}")
 
 
 def _load_all_shops() -> List[Dict[str, Any]]:
@@ -258,20 +295,20 @@ def build_shop_summary(shop: Dict[str, Any]) -> str:
 
 
 def _get_recommendation_threaded(
-    shop_summary: str, api_key: str, model_name: str
+    shop_summary: str, client: Any, model_name: str
 ) -> str:
     """
-    在獨立執行緒中以全新 genai.Client 生成單筆推薦文。
+    在獨立執行緒中以預熱的 genai.Client 生成單筆推薦文。
 
-    每個 thread 建立自己的 Client 實例，避免共用 Client 內部的
-    連線鎖（SDK 同步 API 不支援多 thread 並發同一 Client）。
+    client 由 _rec_client_pool 提供，每個執行緒使用不同的 client 實例，
+    確保無共用狀態，實現真正並行。
 
     Parameters
     ----------
     shop_summary : str
         店家摘要文字。
-    api_key : str
-        Gemini API 金鑰。
+    client : Any
+        已預熱的 Gemini client 實例。
     model_name : str
         Gemini 模型名稱。
 
@@ -284,9 +321,8 @@ def _get_recommendation_threaded(
     try:
         if not check_and_increment("llm_gemini"):
             return default
-        fresh_client = genai.Client(api_key=api_key)
         prompt = RECOMMEND_PROMPT.format(shop_summary=shop_summary)
-        result = fresh_client.models.generate_content(
+        result = client.models.generate_content(
             model=model_name,
             contents=prompt,
             config=types.GenerateContentConfig(temperature=0.6, max_output_tokens=400),
@@ -330,18 +366,21 @@ def generate_recommendations(
         return []
 
     selected = shops_info[:num_shops]
-    summaries = [build_shop_summary(s) for s in selected]
-    api_key = os.getenv("GEMINI_API_KEY", "")
+    # 使用預熱 pool；若 pool 未初始化則 fallback 至主 client
+    clients = (
+        _rec_client_pool[:len(selected)]
+        if len(_rec_client_pool) >= len(selected)
+        else [client] * len(selected)
+    )
 
-    print(f"{GREEN}STEP: 開始並行生成 {len(selected)} 筆推薦文（獨立 Client × ThreadPool）{RESET}")
+    print(f"{GREEN}STEP: 開始並行生成 {len(selected)} 筆推薦文（Pool Client × ThreadPool）{RESET}")
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(summaries)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected)) as executor:
             futures = [
-                executor.submit(_get_recommendation_threaded, s, api_key, model_name)
-                for s in summaries
+                executor.submit(_get_recommendation_threaded, build_shop_summary(s), c, model_name)
+                for s, c in zip(selected, clients)
             ]
-            results = [f.result() for f in futures]
-        return results
+            return [f.result() for f in futures]
     except Exception as e:
         print(f"{RED}STEP ERROR: 推薦文並行流程失敗: {e}{RESET}")
-        return ["點擊查看地圖了解更多。"] * len(summaries)
+        return ["點擊查看地圖了解更多。"] * len(selected)

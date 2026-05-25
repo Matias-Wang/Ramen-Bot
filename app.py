@@ -76,6 +76,16 @@ try:
 except Exception as e:
     print(f"{YELLOW}[STARTUP] LINE API 連線預熱失敗（非致命）: {e}{RESET}")
 
+# 推薦文 Gemini Client Pool 建立並同時預熱（3 個獨立 client，確保 STEP 3 真並行）
+try:
+    from skills.Search_skill import init_rec_client_pool
+    init_rec_client_pool(
+        api_key=os.getenv("GEMINI_API_KEY", ""),
+        model_name=os.getenv("GEMINI_MODEL", ""),
+    )
+except Exception as e:
+    print(f"{YELLOW}[STARTUP] 推薦文 Client Pool 預熱失敗（非致命）: {e}{RESET}")
+
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -149,15 +159,38 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
             check_and_increment("line_api")
             line_bot_api.push_message(user_id, flex)
         else:
-            items = [
-                f"{i+1}. {s.get('name', '不明店名')} ({s.get('location', '不明地區')} / {s.get('style', '不明口味')})"
-                for i, s in enumerate(data[:5])
-            ]
-            reply_text = f"找到 {len(data)} 間店：\n" + "\n".join(items)
-            if recommendations:
-                reply_text += "\n\n推薦詞：\n" + "\n".join(
-                    f"{i+1}. {r}" for i, r in enumerate(recommendations)
+            if intent == 'GET_SPECIFIC_INFO' and len(data) == 1:
+                s = data[0]
+                name = s.get('name', '不明店名')
+                loc = s.get('location') or '未知地區'
+                style = s.get('style') or '未知口味'
+                rating = s.get('rating')
+                ratings_total = s.get('user_ratings_total')
+                address = s.get('address') or '暫無地址'
+
+                rating_str = f"⭐ {rating}" if rating is not None else "暫無評分"
+                if rating is not None and ratings_total is not None:
+                    rating_str += f" ({ratings_total:,} 則評論)"
+
+                rec_text = recommendations[0] if recommendations else "點擊查看地圖了解更多。"
+
+                reply_text = (
+                    f"【{name}】\n"
+                    f"📍 地址：{address}\n"
+                    f"⭐ 評分：{rating_str}\n"
+                    f"🍜 口味與地區：{loc} · {style}\n\n"
+                    f"💡 推薦介紹：\n{rec_text}"
                 )
+            else:
+                items = [
+                    f"{i+1}. {s.get('name', '不明店名')} ({s.get('location', '不明地區')} / {s.get('style', '不明口味')})"
+                    for i, s in enumerate(data[:5])
+                ]
+                reply_text = f"找到 {len(data)} 間店：\n" + "\n".join(items)
+                if recommendations:
+                    reply_text += "\n\n推薦詞：\n" + "\n".join(
+                        f"{i+1}. {r}" for i, r in enumerate(recommendations)
+                    )
             check_and_increment("line_api")
             line_bot_api.push_message(user_id, TextSendMessage(text=reply_text))
         print(f"{GREEN}[TIMER] push_message 完成，耗時 {time.time() - _t_push:.1f}s，"
