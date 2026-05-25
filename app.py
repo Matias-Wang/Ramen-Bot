@@ -49,6 +49,18 @@ try:
 except Exception as e:
     print(f"{YELLOW}[STARTUP] Firestore 預熱失敗（非致命）: {e}{RESET}")
 
+# Gemini API 連線預熱（降低第一次意圖解析延遲）
+try:
+    from google.genai import types as _genai_types
+    router.client.models.generate_content(
+        model=router.model_name,
+        contents="hi",
+        config=_genai_types.GenerateContentConfig(max_output_tokens=1),
+    )
+    print(f"{GREEN}[STARTUP] Gemini API 連線預熱完成{RESET}")
+except Exception as e:
+    print(f"{YELLOW}[STARTUP] Gemini API 連線預熱失敗（非致命）: {e}{RESET}")
+
 
 @app.route("/callback", methods=['POST'])
 def callback():

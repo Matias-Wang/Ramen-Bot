@@ -267,7 +267,7 @@ def get_one_recommendation(shop_summary: str, client: Any, model_name: str) -> s
         recommend_result = client.models.generate_content(
             model=model_name,
             contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.6, max_output_tokens=1200),
+            config=types.GenerateContentConfig(temperature=0.6, max_output_tokens=400),
         )
         if recommend_result.usage_metadata:
             record_tokens(recommend_result.usage_metadata.total_token_count or 0)
