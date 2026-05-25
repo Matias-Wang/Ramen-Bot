@@ -25,7 +25,7 @@ RESET = "\033[0m"
 USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"
 
 # --- 模組層級快取 ---
-_CACHE_TTL_SECONDS = 300  # Firestore 店家快取 5 分鐘
+_CACHE_TTL_SECONDS = 1800  # Firestore 店家快取 30 分鐘
 _shops_cache: List[Dict[str, Any]] = []
 _shops_cache_time: float = 0.0
 _geocode_cache: Dict[str, Optional[Dict[str, float]]] = {}

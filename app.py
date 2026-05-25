@@ -41,6 +41,14 @@ handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
 # 初始化 AgentRouter：負責意圖解析與技能分發
 router = AgentRouter(os.getenv('GEMINI_MODEL'))
 
+# Firestore 店家快取預熱（減少第一次請求延遲）
+try:
+    from skills.Search_skill import _load_all_shops
+    _load_all_shops()
+    print(f"{GREEN}[STARTUP] Firestore 店家快取預熱完成{RESET}")
+except Exception as e:
+    print(f"{YELLOW}[STARTUP] Firestore 預熱失敗（非致命）: {e}{RESET}")
+
 
 @app.route("/callback", methods=['POST'])
 def callback():
