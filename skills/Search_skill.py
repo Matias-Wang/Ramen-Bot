@@ -1,4 +1,4 @@
-import asyncio
+import concurrent.futures
 import copy
 import json
 import os
@@ -25,7 +25,7 @@ RESET = "\033[0m"
 USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"
 
 # --- 模組層級快取 ---
-_CACHE_TTL_SECONDS = 1800  # Firestore 店家快取 30 分鐘
+_CACHE_TTL_SECONDS = 86400  # Firestore 店家快取 24 小時
 _shops_cache: List[Dict[str, Any]] = []
 _shops_cache_time: float = 0.0
 _geocode_cache: Dict[str, Optional[Dict[str, float]]] = {}
@@ -257,18 +257,21 @@ def build_shop_summary(shop: Dict[str, Any]) -> str:
     return summary
 
 
-async def _get_recommendation_async(
-    shop_summary: str, client: Any, model_name: str
+def _get_recommendation_threaded(
+    shop_summary: str, api_key: str, model_name: str
 ) -> str:
     """
-    非同步取得單筆推薦文，供 asyncio.gather 真正並行呼叫。
+    在獨立執行緒中以全新 genai.Client 生成單筆推薦文。
+
+    每個 thread 建立自己的 Client 實例，避免共用 Client 內部的
+    連線鎖（SDK 同步 API 不支援多 thread 並發同一 Client）。
 
     Parameters
     ----------
     shop_summary : str
         店家摘要文字。
-    client : Any
-        Gemini client 實例（使用 client.aio 非同步介面）。
+    api_key : str
+        Gemini API 金鑰。
     model_name : str
         Gemini 模型名稱。
 
@@ -281,8 +284,9 @@ async def _get_recommendation_async(
     try:
         if not check_and_increment("llm_gemini"):
             return default
+        fresh_client = genai.Client(api_key=api_key)
         prompt = RECOMMEND_PROMPT.format(shop_summary=shop_summary)
-        result = await client.aio.models.generate_content(
+        result = fresh_client.models.generate_content(
             model=model_name,
             contents=prompt,
             config=types.GenerateContentConfig(temperature=0.6, max_output_tokens=400),
@@ -303,14 +307,15 @@ def generate_recommendations(
     shops_info: List[Dict[str, Any]], client: Any, model_name: str, num_shops: int = 3
 ) -> List[str]:
     """
-    以 asyncio.gather 真正並行為多間店家生成 AI 推薦文。
+    以 ThreadPoolExecutor 並行為多間店家生成 AI 推薦文。
+    每個 thread 使用獨立的 genai.Client 實例，確保真正並行。
 
     Parameters
     ----------
     shops_info : List[Dict[str, Any]]
         篩選後的店家資訊列表。
     client : Any
-        Gemini client 實例。
+        Gemini client 實例（僅用於取得 api_key，不傳入 thread）。
     model_name : str
         Gemini 模型名稱。
     num_shops : int, optional
@@ -326,18 +331,17 @@ def generate_recommendations(
 
     selected = shops_info[:num_shops]
     summaries = [build_shop_summary(s) for s in selected]
-    default_results = ["點擊查看地圖了解更多。"] * len(selected)
+    api_key = os.getenv("GEMINI_API_KEY", "")
 
-    print(f"{GREEN}STEP: 開始並行生成 {len(selected)} 筆推薦文（asyncio.gather + aio API）{RESET}")
-
-    async def _gather() -> List[str]:
-        tasks = [
-            _get_recommendation_async(s, client, model_name) for s in summaries
-        ]
-        return list(await asyncio.gather(*tasks))
-
+    print(f"{GREEN}STEP: 開始並行生成 {len(selected)} 筆推薦文（獨立 Client × ThreadPool）{RESET}")
     try:
-        return asyncio.run(_gather())
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(summaries)) as executor:
+            futures = [
+                executor.submit(_get_recommendation_threaded, s, api_key, model_name)
+                for s in summaries
+            ]
+            results = [f.result() for f in futures]
+        return results
     except Exception as e:
         print(f"{RED}STEP ERROR: 推薦文並行流程失敗: {e}{RESET}")
-        return default_results
+        return ["點擊查看地圖了解更多。"] * len(summaries)
