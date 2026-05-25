@@ -60,11 +60,13 @@ def _load_all_shops() -> List[Dict[str, Any]]:
     if USE_FIRESTORE:
         try:
             from services.firestore_client import get_db
+            _t_fs = time.time()
             db = get_db()
             fetched = [doc.to_dict() for doc in db.collection("ramen_shops").stream()]
             _shops_cache = fetched
             _shops_cache_time = time.time()
-            print(f"{GREEN}STEP: Firestore 讀取完成，共 {len(_shops_cache)} 筆{RESET}")
+            print(f"{GREEN}STEP: Firestore 讀取完成，共 {len(_shops_cache)} 筆，"
+                  f"耗時 {time.time() - _t_fs:.1f}s{RESET}")
         except Exception as e:
             print(f"{RED}STEP ERROR: Firestore 讀取失敗: {e}{RESET}")
             return _shops_cache if _shops_cache else []
@@ -162,11 +164,13 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     # --- 地理位置處理 (Geocoding) ---
     target_coords = None
     if target_location:
+        _t_geo = time.time()
         target_coords = _get_latlng_cached(target_location)
+        _geo_elapsed = time.time() - _t_geo
         if target_coords:
-            print(f"{GREEN}STEP: 取得目標座標成功 - {target_coords}{RESET}")
+            print(f"{GREEN}STEP: 取得目標座標成功 - {target_coords}，耗時 {_geo_elapsed:.1f}s{RESET}")
         else:
-            print(f"{YELLOW}警告: 無法獲取 '{target_location}' 的經緯度，將使用字串模糊比對回退機制。{RESET}")
+            print(f"{YELLOW}警告: 無法獲取 '{target_location}' 的經緯度（耗時 {_geo_elapsed:.1f}s），將使用字串模糊比對回退機制。{RESET}")
 
     filtered_results = []
     # 預設搜尋半徑 (公里)

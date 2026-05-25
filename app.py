@@ -6,6 +6,7 @@ LINE_TAG = 0
 # === imports ===
 import os
 import json
+import time
 import threading
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -67,8 +68,11 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
     user_id : str
         LINE 使用者 ID，用於 push_message。
     """
+    _t_start = time.time()
+    print(f"{CYAN}[TIMER] 開始處理訊息: {user_text!r}{RESET}")
     try:
         result = router.dispatch(user_text)
+        print(f"{CYAN}[TIMER] dispatch 完成，耗時 {time.time() - _t_start:.1f}s{RESET}")
 
         intent = result.get('intent')
         data = result.get('data', [])
@@ -103,6 +107,7 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
             return
 
         # Carousel 輪播
+        _t_push = time.time()
         if ui_tag == 'CAROUSEL':
             carousel_contents = assemble_carousel(data, recommendations)
             flex = FlexSendMessage(alt_text='拉麵推薦', contents=carousel_contents)
@@ -120,9 +125,11 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
                 )
             check_and_increment("line_api")
             line_bot_api.push_message(user_id, TextSendMessage(text=reply_text))
+        print(f"{GREEN}[TIMER] push_message 完成，耗時 {time.time() - _t_push:.1f}s，"
+              f"全程總耗時 {time.time() - _t_start:.1f}s{RESET}")
 
     except Exception as e:
-        print(f"{RED}ERROR in _reply_to_line: {e}{RESET}")
+        print(f"{RED}ERROR in _reply_to_line: {e} | 全程耗時 {time.time() - _t_start:.1f}s{RESET}")
         try:
             check_and_increment("line_api")
             line_bot_api.push_message(
@@ -130,7 +137,7 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
                 TextSendMessage(text='系統忙碌中，請稍後再試。')
             )
         except Exception as reply_err:
-            print(f"{RED}ERROR: 回覆 LINE 失敗: {reply_err}{RESET}")
+            print(f"{RED}ERROR: push_message 失敗（確認使用者是否加好友）: {reply_err}{RESET}")
 
 
 @handler.add(MessageEvent, message=TextMessage)

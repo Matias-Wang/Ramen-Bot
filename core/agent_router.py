@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from typing import Any
 
 from google import genai
@@ -124,6 +125,8 @@ class AgentRouter:
 
     def _dispatch_inner(self, user_text: str) -> dict:
         """dispatch 的核心邏輯，由頂層 try/except 包覆。"""
+        _t0 = time.time()
+
         # --- STEP 1: 意圖解析 ---
         print(f"{GREEN}STEP 1: 呼叫 Gemini 解析使用者意圖{RESET}")
         try:
@@ -143,10 +146,12 @@ class AgentRouter:
         except Exception as e:
             print(f"{RED}STEP 1 ERROR: {e}{RESET}")
             intent_data = {"intent": "SEARCH_BY_CRITERIA", "ui_tag": "TEXT"}
+        print(f"{CYAN}[TIMER] STEP 1 完成，耗時 {time.time() - _t0:.1f}s{RESET}")
 
         intent = intent_data.get('intent', 'SEARCH_BY_CRITERIA').upper()
 
         # --- STEP 2: Skill 執行 ---
+        _t2 = time.time()
         print(f"{GREEN}STEP 2: 執行 Skill — {intent}{RESET}")
         knowledge_query = intent_data.get('query') or user_text
         try:
@@ -161,8 +166,10 @@ class AgentRouter:
         except Exception as e:
             print(f"{RED}STEP 2 ERROR: {e}{RESET}")
             results = []
+        print(f"{CYAN}[TIMER] STEP 2 完成，耗時 {time.time() - _t2:.1f}s{RESET}")
 
         # --- STEP 3: 推薦文生成 / 知識庫回答 ---
+        _t3 = time.time()
         print(f"{GREEN}STEP 3: 生成推薦文 / 知識庫回答{RESET}")
         recommendations = []
         knowledge_answer = None
@@ -175,6 +182,8 @@ class AgentRouter:
                 )
         except Exception as e:
             print(f"{RED}STEP 3 ERROR: {e}{RESET}")
+        print(f"{CYAN}[TIMER] STEP 3 完成，耗時 {time.time() - _t3:.1f}s，"
+              f"dispatch 總耗時 {time.time() - _t0:.1f}s{RESET}")
 
         return {
             "intent": intent,
