@@ -15,6 +15,7 @@ from core.usage_tracker import check_and_increment, record_tokens
 
 RED = '\033[91m'
 GREEN = '\033[92m'
+CYAN = '\033[96m'
 RESET = '\033[0m'
 
 
