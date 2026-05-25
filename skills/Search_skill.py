@@ -1,5 +1,7 @@
+import copy
 import json
 import os
+import time
 import concurrent.futures
 import re
 import math
@@ -20,6 +22,84 @@ MAGAENTA = "\033[95m"
 RESET = "\033[0m"
 
 USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"
+
+# --- 模組層級快取 ---
+_CACHE_TTL_SECONDS = 300  # Firestore 店家快取 5 分鐘
+_shops_cache: List[Dict[str, Any]] = []
+_shops_cache_time: float = 0.0
+_geocode_cache: Dict[str, Optional[Dict[str, float]]] = {}
+_gmaps_instance: Optional[GoogleMapsService] = None
+
+
+def _get_gmaps() -> GoogleMapsService:
+    """取得全域共用的 GoogleMapsService 實例（Singleton）。"""
+    global _gmaps_instance
+    if _gmaps_instance is None:
+        _gmaps_instance = GoogleMapsService()
+    return _gmaps_instance
+
+
+def _load_all_shops() -> List[Dict[str, Any]]:
+    """
+    讀取全部店家資料，Firestore 結果快取 5 分鐘以減少 gRPC 呼叫次數。
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        店家清單。
+    """
+    global _shops_cache, _shops_cache_time
+    now = time.time()
+
+    if _shops_cache and (now - _shops_cache_time) < _CACHE_TTL_SECONDS:
+        print(f"{CYAN}[CACHE] 使用 Firestore 店家快取（剩餘 "
+              f"{int(_CACHE_TTL_SECONDS - (now - _shops_cache_time))} 秒）{RESET}")
+        return _shops_cache
+
+    if USE_FIRESTORE:
+        try:
+            from services.firestore_client import get_db
+            db = get_db()
+            fetched = [doc.to_dict() for doc in db.collection("ramen_shops").stream()]
+            _shops_cache = fetched
+            _shops_cache_time = time.time()
+            print(f"{GREEN}STEP: Firestore 讀取完成，共 {len(_shops_cache)} 筆{RESET}")
+        except Exception as e:
+            print(f"{RED}STEP ERROR: Firestore 讀取失敗: {e}{RESET}")
+            return _shops_cache if _shops_cache else []
+    else:
+        data_path = os.path.join("data", "ramen_data.json")
+        try:
+            with open(data_path, "r", encoding="utf-8") as f:
+                _shops_cache = json.load(f)
+            _shops_cache_time = time.time()
+        except FileNotFoundError:
+            print(f"{RED}STEP ERROR: 找不到 {data_path} 檔案{RESET}")
+            return []
+
+    return _shops_cache
+
+
+def _get_latlng_cached(location: str) -> Optional[Dict[str, float]]:
+    """
+    Geocoding 結果快取，相同地名只呼叫一次 API。
+
+    Parameters
+    ----------
+    location : str
+        目標地名。
+
+    Returns
+    -------
+    Optional[Dict[str, float]]
+        {'lat': ..., 'lng': ...} 或 None。
+    """
+    if location in _geocode_cache:
+        return _geocode_cache[location]
+    gmaps = _get_gmaps()
+    result = gmaps.get_latlng(location)
+    _geocode_cache[location] = result
+    return result
 
 
 def calculate_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -65,23 +145,9 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     print(f"{GREEN}STEP: 開始執行 Search Skill 篩選邏輯{RESET}")
 
-    if USE_FIRESTORE:
-        try:
-            from services.firestore_client import get_db
-            db = get_db()
-            all_shops = [doc.to_dict() for doc in db.collection("ramen_shops").stream()]
-            print(f"{GREEN}STEP: Firestore 讀取完成，共 {len(all_shops)} 筆{RESET}")
-        except Exception as e:
-            print(f"{RED}STEP ERROR: Firestore 讀取失敗: {e}{RESET}")
-            return []
-    else:
-        data_path = os.path.join("data", "ramen_data.json")
-        try:
-            with open(data_path, "r", encoding="utf-8") as f:
-                all_shops = json.load(f)
-        except FileNotFoundError:
-            print(f"{RED}STEP ERROR: 找不到 {data_path} 檔案{RESET}")
-            return []
+    all_shops = _load_all_shops()
+    if not all_shops:
+        return []
 
     target_location = intent_data.get("location") or ""
     target_style = intent_data.get("style") or ""
@@ -95,8 +161,7 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     # --- 地理位置處理 (Geocoding) ---
     target_coords = None
     if target_location:
-        gmaps = GoogleMapsService()
-        target_coords = gmaps.get_latlng(target_location)
+        target_coords = _get_latlng_cached(target_location)
         if target_coords:
             print(f"{GREEN}STEP: 取得目標座標成功 - {target_coords}{RESET}")
         else:
@@ -106,7 +171,8 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     # 預設搜尋半徑 (公里)
     SEARCH_RADIUS_KM = 5.0
 
-    for shop in all_shops:
+    for _shop in all_shops:
+        shop = copy.copy(_shop)  # 防止寫入 distance_km 汙染快取中的原始 dict
         # 1. 口味比對 (Fuzzy Match)
         shop_style = shop.get("style") or ""
         match_style = not target_style or (target_style in shop_style)
@@ -131,7 +197,6 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 # 若在搜尋半徑內，則視為匹配
                 if dist <= SEARCH_RADIUS_KM:
                     match_location = True
-                    # 將距離資訊存入 shop 物件以便後續排序或顯示 (可選)
                     shop["distance_km"] = round(dist, 2)
             else:
                 # 店家無座標資料，則回退至字串比對

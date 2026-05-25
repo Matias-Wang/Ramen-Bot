@@ -163,6 +163,49 @@ class GoogleMapsService:
 
         return None
 
+    def get_photo_by_place_id(self, place_id: str, max_height_px: int = 800) -> Optional[str]:
+        """
+        Places API (New) Place Details：直接用 place_id 取得照片 CDN URL。
+        比 get_shop_details 少一次 Text Search API 呼叫，適合批次補全圖片。
+
+        Parameters
+        ----------
+        place_id : str
+            Google Places 店家 ID（格式：ChIJ...）。
+        max_height_px : int, optional
+            照片最大高度 (px)，預設為 800。
+
+        Returns
+        -------
+        Optional[str]
+            照片 CDN URL，若失敗則回傳 None。
+        """
+        if not self.api_key:
+            return None
+
+        if not check_and_increment("google_maps_api"):
+            return None
+
+        try:
+            url = f"{PLACES_NEW_BASE_URL}/places/{place_id}"
+            headers = {
+                "X-Goog-Api-Key": self.api_key,
+                "X-Goog-FieldMask": "photos",
+            }
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            photos = data.get("photos", [])
+            if not photos:
+                return None
+            photo_name = photos[0].get("name")
+            if not photo_name:
+                return None
+            return self.get_photo_url(photo_name, max_height_px)
+        except Exception as e:
+            print(f"{RED}STEP ERROR: 用 place_id 取得照片失敗: {e}{RESET}")
+            return None
+
     def get_photo_url(self, photo_name: str, max_height_px: int = 800) -> Optional[str]:
         """
         Places API (New) Media：將照片資源名稱轉換為有效的 HTTPS URL。
