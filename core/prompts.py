@@ -71,3 +71,4 @@ RECOMMEND_PROMPT = """
 <店家描述資料>
 {shop_summary}
 """
+

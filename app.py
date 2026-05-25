@@ -61,6 +61,21 @@ try:
 except Exception as e:
     print(f"{YELLOW}[STARTUP] Gemini API 連線預熱失敗（非致命）: {e}{RESET}")
 
+# Google Maps Geocoding 連線預熱（降低第一次地理搜尋延遲）
+try:
+    from skills.Search_skill import _get_latlng_cached
+    _get_latlng_cached("台北市")
+    print(f"{GREEN}[STARTUP] Google Maps Geocoding 連線預熱完成{RESET}")
+except Exception as e:
+    print(f"{YELLOW}[STARTUP] Google Maps Geocoding 預熱失敗（非致命）: {e}{RESET}")
+
+# LINE API 連線預熱（降低第一次 push_message 延遲）
+try:
+    line_bot_api.get_quota()
+    print(f"{GREEN}[STARTUP] LINE API 連線預熱完成{RESET}")
+except Exception as e:
+    print(f"{YELLOW}[STARTUP] LINE API 連線預熱失敗（非致命）: {e}{RESET}")
+
 
 @app.route("/callback", methods=['POST'])
 def callback():

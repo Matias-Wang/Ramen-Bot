@@ -1,8 +1,8 @@
+import asyncio
 import copy
 import json
 import os
 import time
-import concurrent.futures
 import re
 import math
 import random
@@ -242,13 +242,13 @@ def build_shop_summary(shop: Dict[str, Any]) -> str:
     desc = shop.get("description") or ""
     features = shop.get("features") or []
     dist = shop.get("distance_km")
-    
+
     feature_text = "、".join(features[:4]) if isinstance(features, list) else ""
     parts = [name, f"位於{loc}" if loc else "", f"風格：{style}" if style else ""]
-    
+
     if dist:
         parts.insert(2, f"距離約 {dist} 公里")
-        
+
     summary = "，".join(p for p in parts if p)
     if feature_text:
         summary += f"；特色：{feature_text}"
@@ -257,22 +257,39 @@ def build_shop_summary(shop: Dict[str, Any]) -> str:
     return summary
 
 
-def get_one_recommendation(shop_summary: str, client: Any, model_name: str) -> str:
-    """單筆推薦文生成 (同步轉非同步調用用)"""
+async def _get_recommendation_async(
+    shop_summary: str, client: Any, model_name: str
+) -> str:
+    """
+    非同步取得單筆推薦文，供 asyncio.gather 真正並行呼叫。
+
+    Parameters
+    ----------
+    shop_summary : str
+        店家摘要文字。
+    client : Any
+        Gemini client 實例（使用 client.aio 非同步介面）。
+    model_name : str
+        Gemini 模型名稱。
+
+    Returns
+    -------
+    str
+        推薦文字串。
+    """
     default = "點擊查看地圖了解更多。"
     try:
         if not check_and_increment("llm_gemini"):
             return default
         prompt = RECOMMEND_PROMPT.format(shop_summary=shop_summary)
-        recommend_result = client.models.generate_content(
+        result = await client.aio.models.generate_content(
             model=model_name,
             contents=prompt,
             config=types.GenerateContentConfig(temperature=0.6, max_output_tokens=400),
         )
-        if recommend_result.usage_metadata:
-            record_tokens(recommend_result.usage_metadata.total_token_count or 0)
-
-        raw = recommend_result.text.strip()
+        if result.usage_metadata:
+            record_tokens(result.usage_metadata.total_token_count or 0)
+        raw = result.text.strip()
         raw = re.sub(r"```\w*\s*", "", raw).strip()
         if not raw or any(c in raw for c in ["I will", "As an AI"]):
             return default
@@ -286,7 +303,7 @@ def generate_recommendations(
     shops_info: List[Dict[str, Any]], client: Any, model_name: str, num_shops: int = 3
 ) -> List[str]:
     """
-    對篩選出的店家並行生成 AI 推薦文。
+    以 asyncio.gather 真正並行為多間店家生成 AI 推薦文。
 
     Parameters
     ----------
@@ -309,16 +326,18 @@ def generate_recommendations(
 
     selected = shops_info[:num_shops]
     summaries = [build_shop_summary(s) for s in selected]
+    default_results = ["點擊查看地圖了解更多。"] * len(selected)
 
-    print(f"{GREEN}STEP: 開始並行生成 {len(selected)} 筆推薦文{RESET}")
+    print(f"{GREEN}STEP: 開始並行生成 {len(selected)} 筆推薦文（asyncio.gather + aio API）{RESET}")
+
+    async def _gather() -> List[str]:
+        tasks = [
+            _get_recommendation_async(s, client, model_name) for s in summaries
+        ]
+        return list(await asyncio.gather(*tasks))
+
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(summaries)) as executor:
-            futures = [
-                executor.submit(get_one_recommendation, s, client, model_name)
-                for s in summaries
-            ]
-            results = [f.result() for f in futures]
-        return results
+        return asyncio.run(_gather())
     except Exception as e:
-        print(f"{RED}STEP ERROR: 推薦文流程失敗: {e}{RESET}")
-        return ["點擊查看地圖了解更多。"] * len(summaries)
+        print(f"{RED}STEP ERROR: 推薦文並行流程失敗: {e}{RESET}")
+        return default_results
