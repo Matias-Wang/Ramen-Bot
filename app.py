@@ -159,20 +159,23 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
             check_and_increment("line_api")
             line_bot_api.push_message(user_id, flex)
         else:
-            if intent == 'GET_SPECIFIC_INFO' and len(data) == 1:
+            if intent == "GET_SPECIFIC_INFO" and len(data) == 1:
                 s = data[0]
-                name = s.get('name', '不明店名')
-                loc = s.get('location') or '未知地區'
-                style = s.get('style') or '未知口味'
-                rating = s.get('rating')
-                ratings_total = s.get('user_ratings_total')
-                address = s.get('address') or '暫無地址'
+                name = s.get("name", "不明店名")
+                loc = s.get("location") or "未知地區"
+                style = s.get("style") or "未知口味"
+                rating = s.get("rating")
+                ratings_total = s.get("user_ratings_total")
+                address = s.get("address") or "暫無地址"
 
                 rating_str = f"⭐ {rating}" if rating is not None else "暫無評分"
                 if rating is not None and ratings_total is not None:
                     rating_str += f" ({ratings_total:,} 則評論)"
 
-                rec_text = recommendations[0] if recommendations else "點擊查看地圖了解更多。"
+                rec_text = (
+                    s.get("description")
+                    or "暫無本地 IG 食記，請參考 Maps 資訊。"
+                )
 
                 reply_text = (
                     f"【{name}】\n"
@@ -182,17 +185,21 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
                     f"💡 推薦介紹：\n{rec_text}"
                 )
             else:
-                items = [
-                    f"{i+1}. {s.get('name', '不明店名')} ({s.get('location', '不明地區')} / {s.get('style', '不明口味')})"
-                    for i, s in enumerate(data[:5])
-                ]
+                items = []
+                for i, s in enumerate(data[:5]):
+                    name = s.get("name", "不明店名")
+                    loc = s.get("location", "不明地區")
+                    style = s.get("style", "不明口味")
+                    items.append(f"{i+1}. {name} ({loc} / {style})")
                 reply_text = f"找到 {len(data)} 間店：\n" + "\n".join(items)
                 if recommendations:
                     reply_text += "\n\n推薦詞：\n" + "\n".join(
                         f"{i+1}. {r}" for i, r in enumerate(recommendations)
                     )
             check_and_increment("line_api")
-            line_bot_api.push_message(user_id, TextSendMessage(text=reply_text))
+            line_bot_api.push_message(
+                user_id, TextSendMessage(text=reply_text)
+            )
         print(f"{GREEN}[TIMER] push_message 完成，耗時 {time.time() - _t_push:.1f}s，"
               f"全程總耗時 {time.time() - _t_start:.1f}s{RESET}")
 

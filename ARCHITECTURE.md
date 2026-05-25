@@ -37,7 +37,7 @@
       |       - 生產：Firestore KNN find_nearest()（Top-3）
       |       - Gemini 生成拉麵大師風格回答
       |
-[STEP 3] generate_recommendations() — asyncio 並行 Gemini 生成推薦文
+[STEP 3] generate_recommendations() — ThreadPoolExecutor + 預熱 Client Pool 並行 Gemini 生成推薦文
       |
 [STEP 4] assemble_carousel() — flex_handler 組裝 LINE Flex Carousel
       |
@@ -56,7 +56,7 @@
        - 有座標 → Geocoding 取目標座標 → Haversine 計算距離 → 5km 以內
        - 無座標 → 字串去除「市/區/縣」後模糊比對 fallback
     3. 結果依 `distance_km` 排序（若有座標）
-- **推薦文生成**：`asyncio.gather` 並行呼叫 Gemini，最多 3 筆
+- **推薦文生成**：`ThreadPoolExecutor` + 預熱 Client Pool 並行呼叫 Gemini，最多 3 筆
 
 ### Info Skill (即時數據增強) — `skills/info_skill.py`
 - **數據源**：本地 `data/ramen_data.json` / 生產 Firestore `ramen_shops` + Google Places API (New)
@@ -83,7 +83,7 @@
 
 ### LINE Webhook 逾時應對 (1s Limit)
 LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略應對：
-- **非阻塞處理**：`handle_message` 收到請求後立即啟動 `threading.Thread`，主執行緒直接返回 200，AI 邏輯在背景完成後再呼叫 `reply_message`。Firestore singleton 將處理時間壓縮至 15-20 秒，可安全在 reply token 有效期（60 秒）內完成。
+- **非阻塞處理**：`handle_message` 收到請求後立即啟動 `threading.Thread`，主執行緒直接返回 200，AI 邏輯在背景完成後以 `push_message` 回覆（取代有 60 秒過期限制的 `reply_message`）。啟動時預熱 Firestore、Gemini、Google Maps、Gemini Client Pool，確保首次請求也能快速回應。
 - **快取優先策略 (Cache-First)**：對 API 數據實施 7 天的快取機制，減少重複請求延遲。
 - **預處理機制**：透過 `scripts/data_pipeline.py` 離線完成 IG 數據採集與座標化，確保查詢時不需即時等待。
 
@@ -143,7 +143,7 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
 | Embedding | Google `gemini-embedding-001`（768 維） | 同左 |
 | 密鑰管理 | `.env` | GCP Secret Manager |
 | 部署流程 | 手動啟動 | GitHub Actions（push to main → Build → Artifact Registry → Cloud Run） |
-| 非同步 | `asyncio`（推薦文並行）+ `threading`（Webhook 非阻塞） | 同左 |
+| 非同步 | `threading.ThreadPoolExecutor`（推薦文並行）+ `threading`（Webhook 非阻塞） | 同左 |
 
 ---
 

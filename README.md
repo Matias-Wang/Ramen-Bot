@@ -15,13 +15,13 @@
 - 透過 Gemini（Google AI）解析使用者輸入的自然語言（地區、口味、意圖類型）
 - 以本地資料庫 `ramen_data.json` 做快速店家篩選（Geocoding + Haversine 距離過濾）
 - 利用 Google Maps Places API (New) 取得即時評分、評論數與動態照片
-- 再由 Gemini 依據店家內容生成一句吸引人的推薦文（asyncio 並行生成）
+- 再由 Gemini 依據店家內容生成一句吸引人的推薦文（ThreadPoolExecutor + 預熱 Client Pool 並行生成）
 - 透過 LINE Flex Message Carousel 呈現推薦結果
 
 ### 開發規範 (Technical Standards)
 - **Field Masking**：Places API (New) 僅抓取 `rating, userRatingCount, formattedAddress, photos` 欄位以控管成本。
 - **Flex Handler 規範**：嚴格執行索引配對，禁止生成空盒子 (`contents: []`)，確保型別安全。
-- **逾時應對**：針對 1 秒 Webhook 限制，目前透過 `data_pipeline.py` 預處理資料庫以減輕壓力；非阻塞異步應對機制（`asyncio.create_task`）尚在開發中。
+- **逾時應對**：針對 1 秒 Webhook 限制，`handle_message` 立即啟動背景 `threading.Thread` 返回 200，AI 邏輯在背景完成後以 `push_message` 回覆（取代有 60 秒限制的 `reply_message`）。
 - **每日配額保護**：`usage_tracker.py` 在每次呼叫前檢查 Google Maps、Gemini、LINE API 的每日上限。
 
 ### Google Maps API 相關服務
@@ -44,7 +44,7 @@
 - ✅ 地理距離過濾（Geocoding + Haversine 5km 半徑）
 - ✅ 本地資料庫快速篩選符合店家
 - ✅ Flex Carousel 顯示店家資訊（評分、地址、社群連結）
-- ✅ AI 生成推薦文（asyncio 並行生成，最多 3 筆）
+- ✅ AI 生成推薦文（ThreadPoolExecutor + 預熱 Client Pool 並行生成，最多 3 筆）
 - ✅ 即時店家資料增強（Places API + 7 天 TTL 快取回寫）
 - ✅ 每日 API / LLM 用量追蹤與配額保護
 - ✅ RAG 拉麵知識庫問答（ChromaDB + Google Embedding + Gemini 生成）
@@ -92,7 +92,8 @@ Ramen-Bot/
 │   ├── info_skill.py       # [SKILL 2] 特定店家資訊
 │   └── knowledge_skill.py  # [SKILL 3] RAG 知識庫問答
 ├── services/
-│   └── google_maps.py      # Google Maps API 統一封裝
+│   ├── google_maps.py          # Google Maps API 統一封裝
+│   └── firestore_client.py     # Firestore Client Singleton（全域共用連線）
 ├── tests/
 │   ├── test_search_skill.py
 │   ├── test_flex_handler.py
@@ -109,7 +110,7 @@ Ramen-Bot/
 ### 核心模組用途
 - **意圖解析**：Gemini 將使用者輸入轉成 `{intent, location, style, shop_name, ui_tag}`
 - **篩選邏輯**：Geocoding 取座標 → Haversine 距離計算 → 5km 半徑過濾
-- **推薦生成**：asyncio 並行呼叫 Gemini，每間店生成 30-60 字中文推薦文
+- **推薦生成**：ThreadPoolExecutor + 預熱 Client Pool 並行呼叫 Gemini，每間店生成 30-60 字中文推薦文
 - **UI 組裝**：建立 LINE Flex Message Carousel 回覆給使用者
 
 ---
@@ -190,7 +191,7 @@ python app.py
 1. 使用者輸入文字 → LINE Webhook → `app.py`
 2. `AgentRouter.dispatch()` 呼叫 Gemini 解析意圖（`intent, location, style, shop_name`）
 3. 依 intent 分發至對應 Skill（Search / Info / Knowledge）
-4. `generate_recommendations()` asyncio 並行生成推薦文
+4. `generate_recommendations()` ThreadPoolExecutor + 預熱 Client Pool 並行生成推薦文
 5. `assemble_carousel()` 組成 Flex Carousel → 回傳 LINE
 
 ### 核心邏輯
@@ -206,7 +207,7 @@ python app.py
 |------|------|
 | 語言 | Python 3.13.11 |
 | 套件管理 | UV |
-| 非同步 | asyncio + threading（非阻塞 Webhook） |
+| 非同步 | threading.ThreadPoolExecutor（推薦文並行）+ threading（非阻塞 Webhook） |
 | LLM | Gemini (`google-genai`) |
 | LINE SDK | `line-bot-sdk` |
 | Web 框架 | Flask（本機）/ gunicorn + Cloud Run（上線） |

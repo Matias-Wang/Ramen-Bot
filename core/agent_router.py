@@ -156,9 +156,12 @@ class AgentRouter:
         print(f"{GREEN}STEP 2: 執行 Skill — {intent}{RESET}")
         knowledge_query = intent_data.get('query') or user_text
         try:
-            if intent == 'GET_SPECIFIC_INFO':
-                shop_name = intent_data.get('shop_name') or intent_data.get('location')
-                result_data = self.info_skill.get_shop_info(shop_name, intent_data.get('location', ""))
+            if intent == "GET_SPECIFIC_INFO":
+                shop_name = (
+                    intent_data.get("shop_name") or intent_data.get("location")
+                )
+                loc = intent_data.get("location") or ""
+                result_data = self.info_skill.get_shop_info(shop_name, loc)
                 results = [result_data] if result_data else []
             elif intent == 'KNOWLEDGE_QUERY':
                 results = []
@@ -177,7 +180,7 @@ class AgentRouter:
         try:
             if intent == 'KNOWLEDGE_QUERY':
                 knowledge_answer = self.knowledge_skill.answer(knowledge_query)
-            elif results:
+            elif results and intent != "GET_SPECIFIC_INFO":
                 recommendations = generate_recommendations(
                     results, self.client, self.model_name
                 )
