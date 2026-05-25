@@ -5,6 +5,7 @@ import time
 import concurrent.futures
 import re
 import math
+import random
 from typing import List, Dict, Any, Optional
 from google import genai
 from google.genai import types
@@ -217,6 +218,10 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     # 若有距離資訊，依距離排序
     if any("distance_km" in s for s in filtered_results):
         filtered_results.sort(key=lambda x: x.get("distance_km", 999))
+
+    # 隨機抽選最多 3 筆回傳，避免每次結果順序固定
+    if len(filtered_results) > 3:
+        filtered_results = random.sample(filtered_results, 3)
 
     print(f"{GREEN}STEP: 篩選完成，共找到 {len(filtered_results)} 間店家{RESET}")
     return filtered_results
