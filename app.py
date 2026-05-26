@@ -187,9 +187,9 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
             else:
                 items = []
                 for i, s in enumerate(data[:5]):
-                    name = s.get("name", "不明店名")
-                    loc = s.get("location", "不明地區")
-                    style = s.get("style", "不明口味")
+                    name = s.get("name") or "不明店名"
+                    loc = s.get("location") or "不明地區"
+                    style = s.get("style") or "不明口味"
                     items.append(f"{i+1}. {name} ({loc} / {style})")
                 reply_text = f"找到 {len(data)} 間店：\n" + "\n".join(items)
                 if recommendations:
