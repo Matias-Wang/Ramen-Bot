@@ -210,8 +210,8 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             print(f"{YELLOW}警告: 無法獲取 '{target_location}' 的經緯度（耗時 {_geo_elapsed:.1f}s），將使用字串模糊比對回退機制。{RESET}")
 
     filtered_results = []
-    # 預設搜尋半徑 (公里)
-    SEARCH_RADIUS_KM = 5.0
+    # 預設搜尋半徑 (公里)；2km 確保結果貼近使用者指定地點
+    SEARCH_RADIUS_KM = 2.0
 
     for _shop in all_shops:
         shop = copy.copy(_shop)  # 防止寫入 distance_km 汙染快取中的原始 dict
