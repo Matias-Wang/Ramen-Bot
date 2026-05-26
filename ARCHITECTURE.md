@@ -24,8 +24,9 @@
       |
 [STEP 2] Skill 執行
       +-- SEARCH_BY_CRITERIA → filter_ramen_data() → [shop list]
-      |       - Geocoding 取座標 → Haversine 半徑 5km 過濾
+      |       - Geocoding 取座標 → Haversine 半徑 2km 過濾
       |       - 無座標則字串模糊比對 fallback
+      |       - 結果超過 3 筆時 random.sample 隨機抽選
       |
       +-- GET_SPECIFIC_INFO  → InfoSkill.get_shop_info() → [shop]
       |       - 本地快取優先（7天 TTL）
@@ -37,9 +38,13 @@
       |       - 生產：Firestore KNN find_nearest()（Top-3）
       |       - Gemini 生成拉麵大師風格回答
       |
-[STEP 3] generate_recommendations() — ThreadPoolExecutor + 預熱 Client Pool 並行 Gemini 生成推薦文
+[STEP 3] generate_recommendations()
+      |       - SEARCH_BY_CRITERIA：ThreadPoolExecutor + 預熱 Client Pool 並行生成 3 筆推薦文
+      |       - GET_SPECIFIC_INFO：單執行緒生成 1 筆推薦文（以 IG 食記 description 為 LLM 輸入）
       |
-[STEP 4] assemble_carousel() — flex_handler 組裝 LINE Flex Carousel
+[STEP 4] flex_handler UI 組裝
+      |       - SEARCH_BY_CRITERIA：assemble_carousel() → Flex Carousel（最多 3 個 bubble）
+      |       - GET_SPECIFIC_INFO：get_flex_bubble() → 單一 Flex Bubble（含 Map + social_links 按鈕）
       |
 [LINE Flex Message Response]
 ```
@@ -53,10 +58,11 @@
 - **核心邏輯**：
     1. 口味比對：`target_style in shop["style"]` 模糊比對
     2. 地區比對（優先序）：
-       - 有座標 → Geocoding 取目標座標 → Haversine 計算距離 → 5km 以內
+       - 有座標 → Geocoding 取目標座標 → Haversine 計算距離 → **2km** 以內
        - 無座標 → 字串去除「市/區/縣」後模糊比對 fallback
-    3. 結果依 `distance_km` 排序（若有座標）
+    3. 結果依 `distance_km` 排序（若有座標），超過 3 筆則 `random.sample` 隨機抽選
 - **推薦文生成**：`ThreadPoolExecutor` + 預熱 Client Pool 並行呼叫 Gemini，最多 3 筆
+- **輸出格式**：FlexSendMessage Carousel（最多 3 個 bubble，含 Map 按鈕 + social_links 按鈕）
 
 ### Info Skill (即時數據增強) — `skills/info_skill.py`
 - **數據源**：本地 `data/ramen_data.json` / 生產 Firestore `ramen_shops` + Google Places API (New)
@@ -65,6 +71,8 @@
     2. 若需更新 → Text Search 取得 `place_id`、評分、評論數、照片
     3. 更新後回寫本地 JSON（或 Firestore document）
 - **Field Masking**：`id, displayName, rating, userRatingCount, formattedAddress, photos`
+- **推薦文生成**：將店家 IG 食記（`description` 欄位）作為輸入，以 `RECOMMEND_PROMPT` 呼叫 Gemini 生成 30-60 字摘要推薦文（同 Search Skill 的 `_get_recommendation_threaded`）
+- **輸出格式**：FlexSendMessage 單一 Bubble，含 Map 按鈕 + social_links 按鈕（邏輯與 Search Skill Carousel 相同，使用 `get_flex_bubble()`）
 
 ### Knowledge Skill (RAG 知識庫) — `skills/knowledge_skill.py`
 - **數據源**：`knowledge/` 目錄下的 `.txt` / `.md` 知識文件

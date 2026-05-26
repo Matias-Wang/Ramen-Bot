@@ -41,11 +41,12 @@
 ## 功能特色（Features）
 - ✅ LINE 對話式拉麵推薦（自然語言輸入即可查詢）
 - ✅ Gemini 解析意圖（地區、口味、意圖分類、店名）
-- ✅ 地理距離過濾（Geocoding + Haversine 5km 半徑）
+- ✅ 地理距離過濾（Geocoding + Haversine 2km 半徑，超過 3 筆隨機抽選）
 - ✅ 本地資料庫快速篩選符合店家
-- ✅ Flex Carousel 顯示店家資訊（評分、地址、社群連結）
-- ✅ AI 生成推薦文（ThreadPoolExecutor + 預熱 Client Pool 並行生成，最多 3 筆）
-- ✅ 即時店家資料增強（Places API + 7 天 TTL 快取回寫）
+- ✅ Flex Carousel 顯示店家資訊（評分、地址、Map 按鈕、社群連結）
+- ✅ AI 生成推薦文（ThreadPoolExecutor + 預熱 Client Pool 並行生成，SEARCH 最多 3 筆、INFO 1 筆）
+- ✅ 即時店家資料增強（Places API + 7 天 TTL 快取回寫），以 IG 食記為基礎生成 LLM 摘要
+- ✅ 特定店家查詢（GET_SPECIFIC_INFO）同樣輸出 Flex Bubble，含 Map 按鈕與社群連結
 - ✅ 每日 API / LLM 用量追蹤與配額保護
 - ✅ RAG 拉麵知識庫問答（ChromaDB + Google Embedding + Gemini 生成）
 - ✅ 全局 Fallback 機制（任一 Skill 失敗均能優雅降級）
@@ -191,13 +192,13 @@ python app.py
 1. 使用者輸入文字 → LINE Webhook → `app.py`
 2. `AgentRouter.dispatch()` 呼叫 Gemini 解析意圖（`intent, location, style, shop_name`）
 3. 依 intent 分發至對應 Skill（Search / Info / Knowledge）
-4. `generate_recommendations()` ThreadPoolExecutor + 預熱 Client Pool 並行生成推薦文
-5. `assemble_carousel()` 組成 Flex Carousel → 回傳 LINE
+4. `generate_recommendations()` 生成推薦文：SEARCH 並行 3 筆 / INFO 以 IG 食記摘要 1 筆
+5. UI 組裝：SEARCH → `assemble_carousel()` Flex Carousel；INFO → `get_flex_bubble()` 單一 Bubble → 回傳 LINE
 
 ### 核心邏輯
 - **意圖解析**：只取必要欄位（intent, location, style, shop_name, ui_tag）
-- **地理篩選**：Geocoding 取座標 → Haversine 5km；無座標則字串 fallback
-- **推薦文**：30-60 字繁體中文，溫度 0.6，最多 1200 tokens
+- **地理篩選**：Geocoding 取座標 → Haversine 2km；無座標則字串 fallback；>3 筆則 random.sample
+- **推薦文**：30-60 字繁體中文，溫度 0.6，max_output_tokens 400
 - **快取**：Info Skill 7 天 TTL，過期才呼叫 Places API
 
 ---

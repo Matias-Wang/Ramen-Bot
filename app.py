@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 # === 外部模組匯入 ===
 from core.agent_router import AgentRouter
-from core.flex_handler import assemble_carousel
+from core.flex_handler import assemble_carousel, get_flex_bubble
 from core.usage_tracker import check_and_increment
 
 # === 自定義變數 ===
@@ -153,49 +153,31 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
 
         # Carousel 輪播
         _t_push = time.time()
-        if ui_tag == 'CAROUSEL':
+        if ui_tag == "CAROUSEL":
             carousel_contents = assemble_carousel(data, recommendations)
-            flex = FlexSendMessage(alt_text='拉麵推薦', contents=carousel_contents)
+            flex = FlexSendMessage(alt_text="拉麵推薦", contents=carousel_contents)
+            check_and_increment("line_api")
+            line_bot_api.push_message(user_id, flex)
+        elif intent == "GET_SPECIFIC_INFO" and len(data) == 1:
+            rec = recommendations[0] if recommendations else None
+            bubble = get_flex_bubble(data[0], rec)
+            flex = FlexSendMessage(
+                alt_text=data[0].get("name", "店家資訊"), contents=bubble
+            )
             check_and_increment("line_api")
             line_bot_api.push_message(user_id, flex)
         else:
-            if intent == "GET_SPECIFIC_INFO" and len(data) == 1:
-                s = data[0]
-                name = s.get("name", "不明店名")
-                loc = s.get("location") or "未知地區"
-                style = s.get("style") or "未知口味"
-                rating = s.get("rating")
-                ratings_total = s.get("user_ratings_total")
-                address = s.get("address") or "暫無地址"
-
-                rating_str = f"⭐ {rating}" if rating is not None else "暫無評分"
-                if rating is not None and ratings_total is not None:
-                    rating_str += f" ({ratings_total:,} 則評論)"
-
-                rec_text = (
-                    s.get("description")
-                    or "暫無本地 IG 食記，請參考 Maps 資訊。"
+            items = []
+            for i, s in enumerate(data[:5]):
+                name = s.get("name") or "不明店名"
+                loc = s.get("location") or "不明地區"
+                style = s.get("style") or "不明口味"
+                items.append(f"{i+1}. {name} ({loc} / {style})")
+            reply_text = f"找到 {len(data)} 間店：\n" + "\n".join(items)
+            if recommendations:
+                reply_text += "\n\n推薦詞：\n" + "\n".join(
+                    f"{i+1}. {r}" for i, r in enumerate(recommendations)
                 )
-
-                reply_text = (
-                    f"【{name}】\n"
-                    f"📍 地址：{address}\n"
-                    f"⭐ 評分：{rating_str}\n"
-                    f"🍜 口味與地區：{loc} · {style}\n\n"
-                    f"💡 推薦介紹：\n{rec_text}"
-                )
-            else:
-                items = []
-                for i, s in enumerate(data[:5]):
-                    name = s.get("name") or "不明店名"
-                    loc = s.get("location") or "不明地區"
-                    style = s.get("style") or "不明口味"
-                    items.append(f"{i+1}. {name} ({loc} / {style})")
-                reply_text = f"找到 {len(data)} 間店：\n" + "\n".join(items)
-                if recommendations:
-                    reply_text += "\n\n推薦詞：\n" + "\n".join(
-                        f"{i+1}. {r}" for i, r in enumerate(recommendations)
-                    )
             check_and_increment("line_api")
             line_bot_api.push_message(
                 user_id, TextSendMessage(text=reply_text)
@@ -261,9 +243,15 @@ if __name__ == "__main__":
                     carousel_contents = assemble_carousel(res['data'], res.get('recommendations'))
                     with open('temp.json', 'w', encoding='utf-8') as f:
                         json.dump(carousel_contents, f, ensure_ascii=False, indent=2)
-                    print(f"{CYAN}  => 成功！Flex Message JSON 已寫入 temp.json{RESET}")
+                    print(f"{CYAN}  => 成功！Flex Carousel JSON 已寫入 temp.json{RESET}")
+                elif intent == 'GET_SPECIFIC_INFO' and res.get('data'):
+                    rec = res['recommendations'][0] if res.get('recommendations') else None
+                    bubble = get_flex_bubble(res['data'][0], rec)
+                    with open('temp.json', 'w', encoding='utf-8') as f:
+                        json.dump(bubble, f, ensure_ascii=False, indent=2)
+                    print(f"{CYAN}  => 成功！Flex Bubble JSON 已寫入 temp.json{RESET}")
                 else:
-                    print(f"{BLUE}  => 此意圖建議使用文字回覆，未生成 Carousel JSON。{RESET}")
+                    print(f"{BLUE}  => 此意圖建議使用文字回覆，未生成 Flex JSON。{RESET}")
             except Exception as e:
                 print(f"{RED}STEP 4 ERROR：{e}{RESET}")
 

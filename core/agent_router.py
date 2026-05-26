@@ -180,9 +180,10 @@ class AgentRouter:
         try:
             if intent == 'KNOWLEDGE_QUERY':
                 knowledge_answer = self.knowledge_skill.answer(knowledge_query)
-            elif results and intent != "GET_SPECIFIC_INFO":
+            elif results:
+                num_shops = 1 if intent == "GET_SPECIFIC_INFO" else 3
                 recommendations = generate_recommendations(
-                    results, self.client, self.model_name
+                    results, self.client, self.model_name, num_shops=num_shops
                 )
         except Exception as e:
             print(f"{RED}STEP 3 ERROR: {e}{RESET}")
