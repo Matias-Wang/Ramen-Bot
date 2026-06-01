@@ -380,7 +380,7 @@ def generate_recommendations(
                 executor.submit(_get_recommendation_threaded, build_shop_summary(s), c, model_name)
                 for s, c in zip(selected, clients)
             ]
-            return [f.result() for f in futures]
+            return [f.result(timeout=30) for f in futures]
     except Exception as e:
         print(f"{RED}STEP ERROR: 推薦文並行流程失敗: {e}{RESET}")
         return ["點擊查看地圖了解更多。"] * len(selected)

@@ -145,7 +145,7 @@ class AgentRouter:
             intent_data = self._parse_intent_json(model_result)
             print(f"[DEBUG] AI 解析意圖: {intent_data}")
         except Exception as e:
-            print(f"{RED}STEP 1 ERROR: {e}{RESET}")
+            print(f"{RED}STEP 1 ERROR:{e}{RESET}")
             intent_data = {"intent": "SEARCH_BY_CRITERIA", "ui_tag": "TEXT"}
         print(f"{CYAN}[TIMER] STEP 1 完成，耗時 {time.time() - _t0:.1f}s{RESET}")
 
@@ -168,7 +168,7 @@ class AgentRouter:
             else:  # SEARCH_BY_CRITERIA
                 results = filter_ramen_data(intent_data)
         except Exception as e:
-            print(f"{RED}STEP 2 ERROR: {e}{RESET}")
+            print(f"{RED}STEP 2 ERROR:{e}{RESET}")
             results = []
         print(f"{CYAN}[TIMER] STEP 2 完成，耗時 {time.time() - _t2:.1f}s{RESET}")
 
@@ -186,7 +186,7 @@ class AgentRouter:
                     results, self.client, self.model_name, num_shops=num_shops
                 )
         except Exception as e:
-            print(f"{RED}STEP 3 ERROR: {e}{RESET}")
+            print(f"{RED}STEP 3 ERROR:{e}{RESET}")
         print(f"{CYAN}[TIMER] STEP 3 完成，耗時 {time.time() - _t3:.1f}s，"
               f"dispatch 總耗時 {time.time() - _t0:.1f}s{RESET}")
 

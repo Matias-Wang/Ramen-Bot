@@ -1,3 +1,4 @@
+import copy
 import datetime
 import json
 import os
@@ -30,6 +31,10 @@ class InfoSkill:
         """
         從資料庫讀取所有店家資料。
 
+        Firestore 模式下使用 Search_skill 的 24 小時模組層級快取，
+        避免每次 GET_SPECIFIC_INFO 請求重複串流 178 筆文件。
+        回傳深複製以防止外部修改汙染快取原始資料。
+
         Returns
         -------
         list
@@ -37,13 +42,8 @@ class InfoSkill:
         """
         if USE_FIRESTORE:
             try:
-                from services.firestore_client import get_db
-
-                db = get_db()
-                return [
-                    doc.to_dict()
-                    for doc in db.collection("ramen_shops").stream()
-                ]
+                from skills.Search_skill import _load_all_shops
+                return copy.deepcopy(_load_all_shops())
             except Exception as e:
                 print(f"{RED}STEP 2 ERROR:{e}{RESET}")
                 return []
@@ -54,36 +54,40 @@ class InfoSkill:
             print(f"{RED}STEP 2 ERROR:{e}{RESET}")
             return []
 
-    def _save_data(self, data: list) -> None:
+    def _save_one_shop(self, shop: dict) -> None:
         """
-        將店家資料清單寫回資料庫。
+        將單一店家資料寫回資料庫。
+
+        Firestore 模式下只寫入一筆文件（merge=True），取代舊版批次寫入全部 178 筆。
+        本地模式下讀出完整 JSON、更新對應條目後寫回。
 
         Parameters
         ----------
-        data : list
-            要寫入的店家資料清單。
+        shop : dict
+            要寫入的店家資料字典。
         """
         if USE_FIRESTORE:
             try:
                 from services.firestore_client import get_db
 
                 db = get_db()
-                batch = db.batch()
-                for shop in data:
-                    raw_id = shop.get("id") or shop.get("name", "unknown")
-                    doc_id = str(raw_id).replace("/", "_")
-                    batch.set(
-                        db.collection("ramen_shops").document(doc_id),
-                        shop,
-                        merge=True,
-                    )
-                batch.commit()
+                raw_id = shop.get("id") or shop.get("name", "unknown")
+                doc_id = str(raw_id).replace("/", "_")
+                db.collection("ramen_shops").document(doc_id).set(shop, merge=True)
             except Exception as e:
                 print(f"{RED}STEP 2 ERROR:{e}{RESET}")
             return
         try:
+            with open(DATA_PATH, "r", encoding="utf-8") as f:
+                all_shops = json.load(f)
+            for i, s in enumerate(all_shops):
+                if s.get("name") == shop.get("name"):
+                    all_shops[i] = shop
+                    break
+            else:
+                all_shops.append(shop)
             with open(DATA_PATH, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(all_shops, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"{RED}STEP 2 ERROR:{e}{RESET}")
 
@@ -155,7 +159,7 @@ class InfoSkill:
                     all_shops.append(new_info)
                     target_shop = new_info
 
-                self._save_data(all_shops)
+                self._save_one_shop(target_shop)
             else:
                 # We can construct a custom exception or error string to conform to step error format
                 print(f"{RED}STEP 2 ERROR:找不到店家詳細資訊 {shop_name}{RESET}")

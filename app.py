@@ -86,9 +86,17 @@ try:
 except Exception as e:
     print(f"{YELLOW}[STARTUP] 推薦文 Client Pool 預熱失敗（非致命）: {e}{RESET}")
 
+# Firestore gRPC 心跳啟動（DATA_BACKEND=firestore 時才啟動，防止 gRPC 連線閒置超時）
+if os.getenv("DATA_BACKEND", "local") == "firestore":
+    try:
+        from services.firestore_client import start_heartbeat
+        start_heartbeat()
+    except Exception as e:
+        print(f"{YELLOW}[STARTUP] Firestore 心跳啟動失敗（非致命）: {e}{RESET}")
+
 
 @app.route("/callback", methods=['POST'])
-def callback():
+def callback() -> str:
     """
     LINE Webhook 入口點。
     """
@@ -198,7 +206,7 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
 
 
 @handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
+def handle_message(event: MessageEvent) -> None:
     """
     LINE 訊息事件入口。立即返回（非阻塞），由背景執行緒處理 AI 邏輯與回覆。
     改用 user_id 傳遞至 _reply_to_line，使用 push_message 取代 reply_message。
@@ -253,6 +261,6 @@ if __name__ == "__main__":
                 else:
                     print(f"{BLUE}  => 此意圖建議使用文字回覆，未生成 Flex JSON。{RESET}")
             except Exception as e:
-                print(f"{RED}STEP 4 ERROR：{e}{RESET}")
+                print(f"{RED}STEP 4 ERROR:{e}{RESET}")
 
             print(f"{MAGAENTA}{'='*50}{RESET}")
