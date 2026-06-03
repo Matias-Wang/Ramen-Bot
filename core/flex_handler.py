@@ -70,7 +70,8 @@ def get_flex_bubble(shop, recommendation=None):
     location = shop.get('location', '未知地區')
     style = shop.get('style', '未知口味')
     address = shop.get('address', '暫無地址')
-    rec_text = recommendation if recommendation else "點擊查看地圖了解更多。"
+    _desc = shop.get("description") or ""
+    rec_text = recommendation if recommendation else (_desc[:80] if _desc else "點擊查看地圖了解更多。")
     image_url = shop.get('image_url')
     if not (image_url and image_url.startswith('https://')):
         image_url = None

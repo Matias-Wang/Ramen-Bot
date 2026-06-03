@@ -317,7 +317,7 @@ def _get_recommendation_threaded(
     str
         推薦文字串。
     """
-    default = "點擊查看地圖了解更多。"
+    default = ""
     try:
         if not check_and_increment("llm_gemini"):
             return default
@@ -383,4 +383,4 @@ def generate_recommendations(
             return [f.result(timeout=30) for f in futures]
     except Exception as e:
         print(f"{RED}STEP ERROR: 推薦文並行流程失敗: {e}{RESET}")
-        return ["點擊查看地圖了解更多。"] * len(selected)
+        return [""] * len(selected)

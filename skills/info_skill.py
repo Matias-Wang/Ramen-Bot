@@ -134,6 +134,7 @@ class InfoSkill:
             print(
                 f"{GREEN}STEP 2: 從 Google Maps 取得 {shop_name} 的最新資料{RESET}"
             )
+            _was_existing = target_shop is not None
             details = self.gmaps_service.get_shop_details(shop_name, location)
 
             if details:
@@ -156,10 +157,12 @@ class InfoSkill:
                     new_info["location"] = location
                     new_info["style"] = "未知"
                     new_info["description"] = ""
-                    all_shops.append(new_info)
                     target_shop = new_info
 
-                self._save_one_shop(target_shop)
+                # 只對原本就存在資料庫的店家執行快取回寫，
+                # 避免 Google Maps 查到的新店污染 ramen_shops 搜尋資料集
+                if _was_existing:
+                    self._save_one_shop(target_shop)
             else:
                 # We can construct a custom exception or error string to conform to step error format
                 print(f"{RED}STEP 2 ERROR:找不到店家詳細資訊 {shop_name}{RESET}")

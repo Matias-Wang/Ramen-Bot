@@ -181,10 +181,13 @@ class AgentRouter:
             if intent == 'KNOWLEDGE_QUERY':
                 knowledge_answer = self.knowledge_skill.answer(knowledge_query)
             elif results:
-                num_shops = 1 if intent == "GET_SPECIFIC_INFO" else 3
-                recommendations = generate_recommendations(
-                    results, self.client, self.model_name, num_shops=num_shops
-                )
+                if intent == "GET_SPECIFIC_INFO":
+                    # 直接使用 IG 食記描述，不呼叫 LLM 生成推薦文
+                    recommendations = [results[0].get("description") or ""]
+                else:
+                    recommendations = generate_recommendations(
+                        results, self.client, self.model_name, num_shops=3
+                    )
         except Exception as e:
             print(f"{RED}STEP 3 ERROR:{e}{RESET}")
         print(f"{CYAN}[TIMER] STEP 3 完成，耗時 {time.time() - _t3:.1f}s，"
