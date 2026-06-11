@@ -3,9 +3,11 @@
 .venv/
 __pycache__/
 *.pyc
-data/
+
+# Agent 相關文件
 CLAUDE.md
 GEMINI.md
+ANTIGRAVITY.md
 .claude
 
 error.log/
@@ -15,8 +17,9 @@ scripts/
 development_history/
 docs/
 temp.json
-PROGRESS.md
+PENDING.md
 backup/
+PENDING.md
 
 # 資料清理
 dta_pipline.py
@@ -31,4 +34,3 @@ knowledge/
 # IG session 檔案（含敏感 cookie）
 .ig_session_*
 
-PENDING.md
