@@ -1,10 +1,57 @@
 import copy
 import datetime
+import difflib
 import json
 import os
 from typing import Optional
 
 from services.google_maps import GoogleMapsService
+
+# 模糊比對門檻：低於此相似度視為「查無此店」，避免誤配到不相關店家
+FUZZY_MATCH_THRESHOLD = 0.5
+# 地區相符時的額外加分，用於同名/相似名候選間的排序
+LOCATION_MATCH_BONUS = 0.1
+
+
+def _find_shop_by_name(all_shops: list, shop_name: str, location: str = "") -> Optional[dict]:
+    """
+    在店家清單中尋找最符合 shop_name 的店家。
+
+    使用者口語化的店名（如「麒麟拉麵」）常與資料庫完整店名
+    （如「麒麟創作拉麵坊」）不完全相同，因此先做完全比對，
+    再以 difflib 相似度做模糊比對，並用 location 是否相符加分排序。
+
+    Parameters
+    ----------
+    all_shops : list
+        店家資料清單。
+    shop_name : str
+        目標店家名稱（可能不完整或為口語化簡稱）。
+    location : str, optional
+        店家所在區域，用於相似度相近時的排序加分。
+
+    Returns
+    -------
+    Optional[dict]
+        最符合的店家資料字典，找不到則回傳 None。
+    """
+    if not shop_name:
+        return None
+
+    for s in all_shops:
+        if s.get("name") == shop_name:
+            return s
+
+    best_shop, best_score = None, 0.0
+    for s in all_shops:
+        name = s.get("name") or ""
+        score = difflib.SequenceMatcher(None, shop_name, name).ratio()
+        if location and location in (s.get("location") or ""):
+            score += LOCATION_MATCH_BONUS
+        if score > best_score:
+            best_shop, best_score = s, score
+
+    return best_shop if best_score >= FUZZY_MATCH_THRESHOLD else None
 
 # <使用者自訂變數>
 RED = "\033[91m"
@@ -112,9 +159,7 @@ class InfoSkill:
         location = location or ""
         all_shops = self._load_data()
 
-        target_shop = next(
-            (s for s in all_shops if s["name"] == shop_name), None
-        )
+        target_shop = _find_shop_by_name(all_shops, shop_name, location)
 
         needs_update = False
         if not target_shop:
