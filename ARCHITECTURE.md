@@ -197,18 +197,14 @@ Ramen-Bot/
 │   ├── ramen_data_template.json    # 欄位格式範本
 │   ├── ramen_data_checkpoint.json  # Pipeline Stage 2 中斷點備份
 │   ├── instagram_data.json         # IG 爬蟲彙整輸出
-│   ├── media/                      # IG 原始爬蟲資料（posts/profile/stories）
-│   └── data_cleaning_rule.md       # 資料清洗規則說明
+│   └── instagram_data_schema.md    # IG 爬蟲資料欄位說明
 ├── log/
-│   ├── usage.json          # 每日 API / LLM 用量紀錄（本地開發用）
-│   └── testing_result.md   # cowork從電腦版Line上的測試結果
+│   └── usage.json          # 每日 API / LLM 用量紀錄（本地開發用）
 ├── knowledge/
-│   ├── ramen_category.md   # 拉麵口味與流派知識文件
-│   ├── ramen_etiquette.md  # 麵條硬度、點餐禮儀與常見 FAQ
-│   └── .chroma_db/         # ChromaDB 向量索引（本地自動生成，不納入版控）
+│   └── .chroma_db/         # ChromaDB 向量索引（本地自動生成，不納入版控；來源 .md 已於索引建立後移除）
 └── .env                    # 密鑰管理（不納入版控）
 ```
 
 ---
 
-> 研發進度與上線規劃詳見 [`PROGRESS.md`](PROGRESS.md)（不納入版控）。
+> 研發進度與上線規劃詳見 [`PENDING.md`](PENDING.md)（不納入版控）。

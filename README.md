@@ -100,8 +100,7 @@ Ramen-Bot/
 │   ├── test_flex_handler.py
 │   └── test_usage_tracker.py
 ├── knowledge/
-│   ├── ramen_category.md   # 拉麵流派知識文件
-│   └── ramen_etiquette.md  # 點餐禮儀與常見 FAQ
+│   └── .chroma_db/         # ChromaDB 向量索引（拉麵流派、點餐禮儀等知識已建入索引）
 ├── data/
 │   └── ramen_data.json     # 主資料庫（本地開發）
 └── log/
