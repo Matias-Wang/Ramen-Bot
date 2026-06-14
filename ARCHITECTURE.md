@@ -187,7 +187,8 @@ Ramen-Bot/
 │   ├── address_consistency_check.py      # IG vs Google 地址字元相似度校驗（50% 閾值）
 │   ├── migrate_to_firestore.py           # 店家資料匯入/同步 Firestore（import / sync 模式）
 │   ├── migrate_knowledge_to_firestore.py # 知識庫向量索引寫入 Firestore（支援 --force）
-│   └── setup_secrets.ps1                 # 從 .env 一鍵上傳金鑰至 Secret Manager
+│   ├── setup_secrets.ps1                 # 從 .env 一鍵上傳金鑰至 Secret Manager
+│   └── append_new_shops.py               # 將新抓取的店家資料附加至 ramen_data.json（不比對重複）
 ├── tests/
 │   ├── test_search_skill.py    # Haversine 距離計算、店家摘要建構
 │   ├── test_flex_handler.py    # Bubble 生成、Carousel 組裝
@@ -197,7 +198,7 @@ Ramen-Bot/
 │   ├── ramen_data_template.json    # 欄位格式範本
 │   ├── ramen_data_checkpoint.json  # Pipeline Stage 2 中斷點備份
 │   ├── instagram_data.json         # IG 爬蟲彙整輸出
-│   └── instagram_data_schema.md    # IG 爬蟲資料欄位說明
+│   └── DATA_SCHEMA.md              # 資料結構與 IG 原始資料管理說明（不納入版控）
 ├── log/
 │   └── usage.json          # 每日 API / LLM 用量紀錄（本地開發用）
 ├── knowledge/
