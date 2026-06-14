@@ -68,7 +68,7 @@ def get_flex_bubble(shop, recommendation=None):
 
     name = shop.get('name', '未知店名')
     location = shop.get('location', '未知地區')
-    style = shop.get('style', '未知口味')
+    style = shop.get('style') or ""
     address = shop.get('address', '暫無地址')
     _desc = shop.get("description") or ""
     rec_text = recommendation if recommendation else (_desc[:80] if _desc else "點擊查看地圖了解更多。")
@@ -79,7 +79,7 @@ def get_flex_bubble(shop, recommendation=None):
 
     body_contents = bubble['body']['contents']
     body_contents[0]['text'] = name
-    body_contents[1]['text'] = f"{location} · {style}"
+    body_contents[1]['text'] = f"{location} · {style}" if style else location
 
     rating = shop.get('rating')
     user_ratings_total = shop.get('user_ratings_total')
