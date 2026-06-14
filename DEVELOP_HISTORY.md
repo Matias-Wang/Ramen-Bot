@@ -67,3 +67,16 @@
 - 移除已無用腳本：`clean_instagram_data.py`、`fix_ig_links.py`、`ramen_data_csv_tool.py`、`update_descriptions.py`、`update_ratings.py`
 - 移除根目錄 `DATA_PIPELINE.md`（內容已併入 `data/DATA_SCHEMA.md`，不納入版控）
 - 移除空白未使用的 `DEVLOG.md`（內容由本檔案取代）
+
+---
+
+## 2026-06-14 — Search / Info Skill 比對邏輯修正
+
+### 修正
+- `services/google_maps.py`：`get_latlng` 加上 `region="tw"`，避免「中山區」等地名被 Geocoding 解析到海外或外縣市同名地點
+- `skills/Search_skill.py`：地名未含「市/縣」時自動補上「台北市」前綴後再 Geocoding（店家資料以台北市為主，修正「中山站」「中山區」搜尋不到結果的問題）
+- `core/agent_router.py`：`GET_SPECIFIC_INFO` 在店家無預存 IG `description` 時，改為即時呼叫 Gemini 生成推薦文，取代原本顯示的「點擊查看地圖了解更多」
+- `skills/info_skill.py`：
+  - 新店家（未收錄資料庫）的 `style` 欄位由 `"未知"` 改為空字串，避免污染推薦文 prompt 與 UI 顯示「· 未知」
+  - 新增 `_find_shop_by_name()`，店名比對改為「完全比對 → difflib 相似度模糊比對（門檻 0.5，地區相符加分）」，修正使用者口語化店名（如「麒麟拉麵」）對應不到資料庫完整店名（如「麒麟創作拉麵坊」）的問題
+
