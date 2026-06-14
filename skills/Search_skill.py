@@ -201,13 +201,19 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     # --- 地理位置處理 (Geocoding) ---
     target_coords = None
     if target_location:
+        # 店家資料以台北市為主，地名若未包含縣市資訊，預設視為台北市，
+        # 避免「中山區」「中山站」等同名地點被解析到外縣市或海外座標。
+        geocode_location = target_location
+        if not re.search(r"(市|縣)", target_location) and not target_location.startswith("台北"):
+            geocode_location = f"台北市{target_location}"
+
         _t_geo = time.time()
-        target_coords = _get_latlng_cached(target_location)
+        target_coords = _get_latlng_cached(geocode_location)
         _geo_elapsed = time.time() - _t_geo
         if target_coords:
-            print(f"{GREEN}STEP: 取得目標座標成功 - {target_coords}，耗時 {_geo_elapsed:.1f}s{RESET}")
+            print(f"{GREEN}STEP: 取得目標座標成功 - '{geocode_location}' -> {target_coords}，耗時 {_geo_elapsed:.1f}s{RESET}")
         else:
-            print(f"{YELLOW}警告: 無法獲取 '{target_location}' 的經緯度（耗時 {_geo_elapsed:.1f}s），將使用字串模糊比對回退機制。{RESET}")
+            print(f"{YELLOW}警告: 無法獲取 '{geocode_location}' 的經緯度（耗時 {_geo_elapsed:.1f}s），將使用字串模糊比對回退機制。{RESET}")
 
     filtered_results = []
     # 預設搜尋半徑 (公里)；2km 確保結果貼近使用者指定地點
