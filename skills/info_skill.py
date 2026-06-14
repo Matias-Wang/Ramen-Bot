@@ -155,7 +155,7 @@ class InfoSkill:
                     target_shop.update(new_info)
                 else:
                     new_info["location"] = location
-                    new_info["style"] = "未知"
+                    new_info["style"] = ""
                     new_info["description"] = ""
                     target_shop = new_info
 

@@ -182,8 +182,15 @@ class AgentRouter:
                 knowledge_answer = self.knowledge_skill.answer(knowledge_query)
             elif results:
                 if intent == "GET_SPECIFIC_INFO":
-                    # 直接使用 IG 食記描述，不呼叫 LLM 生成推薦文
-                    recommendations = [results[0].get("description") or ""]
+                    desc = results[0].get("description") or ""
+                    if desc:
+                        # 已有 IG 食記描述，直接使用，不重複呼叫 LLM
+                        recommendations = [desc]
+                    else:
+                        # 無預存描述（店家未收錄於知識庫），即時呼叫 Gemini 生成推薦文
+                        recommendations = generate_recommendations(
+                            results, self.client, self.model_name, num_shops=1
+                        )
                 else:
                     recommendations = generate_recommendations(
                         results, self.client, self.model_name, num_shops=3

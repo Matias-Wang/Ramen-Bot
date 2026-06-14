@@ -71,7 +71,7 @@ class GoogleMapsService:
 
         print(f"{GREEN}STEP: 正在獲取地址經緯度 - {address}{RESET}")
         try:
-            geocode_result = self.gmaps.geocode(address, language="zh-TW")
+            geocode_result = self.gmaps.geocode(address, language="zh-TW", region="tw")
             if geocode_result:
                 location = geocode_result[0]["geometry"]["location"]
                 return {"lat": location["lat"], "lng": location["lng"]}
