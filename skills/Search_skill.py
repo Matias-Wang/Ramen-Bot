@@ -9,7 +9,7 @@ import random
 from typing import List, Dict, Any, Optional
 from google import genai
 from google.genai import types
-from core.prompts import RECOMMEND_PROMPT
+from core.prompts import INFO_SUMMARY_PROMPT, RECOMMEND_PROMPT
 from services.google_maps import GoogleMapsService
 from core.usage_tracker import check_and_increment, record_tokens
 
@@ -235,7 +235,12 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         elif target_coords:
             # 使用經緯度比對
             shop_coords = shop.get("coordinates")
-            if shop_coords:
+            has_coords = (
+                shop_coords
+                and shop_coords.get("lat") is not None
+                and shop_coords.get("lng") is not None
+            )
+            if has_coords:
                 dist = calculate_distance(
                     target_coords["lat"],
                     target_coords["lng"],
@@ -390,3 +395,43 @@ def generate_recommendations(
     except Exception as e:
         print(f"{RED}STEP ERROR: 推薦文並行流程失敗: {e}{RESET}")
         return [""] * len(selected)
+
+
+def summarize_description(description: str, client: Any, model_name: str) -> str:
+    """
+    將店家完整 IG 食記內容摘要為約 100~150 字的介紹文字。
+
+    Parameters
+    ----------
+    description : str
+        店家的完整 IG 食記原文。
+    client : Any
+        Gemini client 實例。
+    model_name : str
+        Gemini 模型名稱。
+
+    Returns
+    -------
+    str
+        摘要文字，失敗時回傳空字串（由呼叫端回退至原始 description）。
+    """
+    default = ""
+    try:
+        if not check_and_increment("llm_gemini"):
+            return default
+        prompt = INFO_SUMMARY_PROMPT.format(description=description)
+        result = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.6, max_output_tokens=600),
+        )
+        if result.usage_metadata:
+            record_tokens(result.usage_metadata.total_token_count or 0)
+        raw = result.text.strip()
+        raw = re.sub(r"```\w*\s*", "", raw).strip()
+        if not raw or any(c in raw for c in ["I will", "As an AI"]):
+            return default
+        return raw
+    except Exception as e:
+        print(f"{RED}STEP ERROR: 摘要店家描述失敗: {e}{RESET}")
+        return default

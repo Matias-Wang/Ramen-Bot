@@ -38,9 +38,12 @@
       |       - 生產：Firestore KNN find_nearest()（Top-3）
       |       - Gemini 生成拉麵大師風格回答
       |
-[STEP 3] generate_recommendations()
-      |       - SEARCH_BY_CRITERIA：ThreadPoolExecutor + 預熱 Client Pool 並行生成 3 筆推薦文
-      |       - GET_SPECIFIC_INFO：單執行緒生成 1 筆推薦文（以 IG 食記 description 為 LLM 輸入）
+[STEP 3] 推薦文 / 介紹文生成
+      |       - SEARCH_BY_CRITERIA：generate_recommendations() — ThreadPoolExecutor +
+      |         預熱 Client Pool 並行生成 3 筆推薦文（30-60 字）
+      |       - GET_SPECIFIC_INFO：有 description 時呼叫 summarize_description()，
+      |         以 INFO_SUMMARY_PROMPT 摘要為 100~150 字介紹文；無 description 時
+      |         回退至 generate_recommendations() 生成 1 筆推薦文（30-60 字）
       |
 [STEP 4] flex_handler UI 組裝
       |       - SEARCH_BY_CRITERIA：assemble_carousel() → Flex Carousel（最多 3 個 bubble）
@@ -71,7 +74,7 @@
     2. 若需更新 → Text Search 取得 `place_id`、評分、評論數、照片
     3. 更新後回寫本地 JSON（或 Firestore document）
 - **Field Masking**：`id, displayName, rating, userRatingCount, formattedAddress, photos`
-- **推薦文生成**：將店家 IG 食記（`description` 欄位）作為輸入，以 `RECOMMEND_PROMPT` 呼叫 Gemini 生成 30-60 字摘要推薦文（同 Search Skill 的 `_get_recommendation_threaded`）
+- **介紹文生成**：有 `description`（IG 食記）時，以 `INFO_SUMMARY_PROMPT` 呼叫 Gemini 摘要為 100~150 字介紹文（`summarize_description()`）；無 `description` 時回退至 `RECOMMEND_PROMPT` 生成 30-60 字推薦文（同 Search Skill 的 `generate_recommendations`）
 - **輸出格式**：FlexSendMessage 單一 Bubble，含 Map 按鈕 + social_links 按鈕（邏輯與 Search Skill Carousel 相同，使用 `get_flex_bubble()`）
 
 ### Knowledge Skill (RAG 知識庫) — `skills/knowledge_skill.py`

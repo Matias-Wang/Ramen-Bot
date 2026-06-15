@@ -197,6 +197,9 @@ class InfoSkill:
                 }
 
                 if target_shop:
+                    # 既有店家已由 _find_shop_by_name 鎖定，name/description/style/
+                    # location 須保持來自同一筆資料，不可被 Google Places 的 name 覆蓋
+                    new_info.pop("name", None)
                     target_shop.update(new_info)
                 else:
                     new_info["location"] = location

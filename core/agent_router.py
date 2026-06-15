@@ -7,7 +7,11 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from skills.Search_skill import filter_ramen_data, generate_recommendations
+from skills.Search_skill import (
+    filter_ramen_data,
+    generate_recommendations,
+    summarize_description,
+)
 from skills.info_skill import InfoSkill
 from skills.knowledge_skill import KnowledgeSkill
 from core.prompts import IDENTIFY_INSTRUCTION_PROMPT
@@ -184,8 +188,10 @@ class AgentRouter:
                 if intent == "GET_SPECIFIC_INFO":
                     desc = results[0].get("description") or ""
                     if desc:
-                        # 已有 IG 食記描述，直接使用，不重複呼叫 LLM
-                        recommendations = [desc]
+                        # 將完整 IG 食記摘要為較長的介紹文字
+                        recommendations = [
+                            summarize_description(desc, self.client, self.model_name)
+                        ]
                     else:
                         # 無預存描述（店家未收錄於知識庫），即時呼叫 Gemini 生成推薦文
                         recommendations = generate_recommendations(
