@@ -4,7 +4,13 @@
 """
 
 import pytest
-from skills.Search_skill import calculate_distance, build_shop_summary, _build_geocode_query
+import skills.Search_skill as search_skill
+from skills.Search_skill import (
+    calculate_distance,
+    build_shop_summary,
+    _build_geocode_query,
+    filter_ramen_data,
+)
 
 
 # ─── calculate_distance ────────────────────────────────────────────────────────
@@ -115,3 +121,145 @@ class TestBuildGeocodeQuery:
 
     def test_already_starts_with_taipei_left_unchanged(self):
         assert _build_geocode_query("台北中山區") == "台北中山區"
+
+
+# ─── filter_ramen_data ──────────────────────────────────────────────────────
+
+# 模擬 Geocoding 結果，避免測試呼叫真實 Google Maps API。
+# key 為 _build_geocode_query() 轉換後的查詢字串。
+_MOCK_GEOCODE_RESULTS = {
+    "台北捷運中山站": {"lat": 25.0532, "lng": 121.5201},
+    "台北捷運公館站": {"lat": 25.0148, "lng": 121.5340},
+    "台北市中山區": {"lat": 25.0633, "lng": 121.5258},
+    "台北市大安區": {"lat": 25.0264, "lng": 121.5436},
+}
+
+
+def _make_test_shops() -> list[dict]:
+    """建立測試用店家清單，涵蓋有座標/無座標、不同地區與口味。"""
+    return [
+        {
+            "id": "shop_zhongshan_tonkotsu",
+            "name": "中山豚骨拉麵",
+            "location": "台北市中山區",
+            "style": "豚骨",
+            "coordinates": {"lat": 25.0540, "lng": 121.5205},
+        },
+        {
+            "id": "shop_zhongshan_miso",
+            "name": "中山味噌拉麵",
+            "location": "台北市中山區",
+            "style": "味噌",
+            "coordinates": {"lat": 25.0520, "lng": 121.5195},
+        },
+        {
+            "id": "shop_gongguan_tonkotsu",
+            "name": "公館豚骨拉麵",
+            "location": "台北市中正區",
+            "style": "豚骨",
+            "coordinates": {"lat": 25.0150, "lng": 121.5342},
+        },
+        {
+            "id": "shop_daan_tonkotsu",
+            "name": "大安豚骨拉麵",
+            "location": "台北市大安區",
+            "style": "豚骨",
+            "coordinates": {"lat": 25.0260, "lng": 121.5440},
+        },
+        {
+            "id": "shop_no_coords",
+            "name": "中山無座標拉麵",
+            "location": "台北市中山區",
+            "style": "醬油",
+            "coordinates": {"lat": None, "lng": None},
+        },
+        {
+            "id": "shop_far_away",
+            "name": "桃園拉麵",
+            "location": "桃園市",
+            "style": "豚骨",
+            "coordinates": {"lat": 24.993, "lng": 121.301},
+        },
+    ]
+
+
+@pytest.fixture(autouse=True)
+def _mock_search_dependencies(monkeypatch):
+    """以固定測試資料與模擬 Geocoding 取代 _load_all_shops / _get_latlng_cached，
+    避免讀取正式 ramen_data.json 或呼叫真實 Google Maps API。"""
+    monkeypatch.setattr(search_skill, "_load_all_shops", _make_test_shops)
+    monkeypatch.setattr(
+        search_skill,
+        "_get_latlng_cached",
+        lambda query: _MOCK_GEOCODE_RESULTS.get(query),
+    )
+
+
+class TestFilterRamenDataLocationQueries:
+    """涵蓋「OO站附近的拉麵」「OO區的拉麵」等地理位置問法。"""
+
+    def test_mrt_station_query_returns_nearby_shops_sorted_by_distance(self):
+        result = filter_ramen_data({"location": "中山站"})
+        ids = [s["id"] for s in result]
+        assert "shop_zhongshan_tonkotsu" in ids
+        assert "shop_zhongshan_miso" in ids
+        assert "shop_daan_tonkotsu" not in ids
+        for s in result:
+            assert "distance_km" in s
+        distances = [s["distance_km"] for s in result]
+        assert distances == sorted(distances)
+
+    def test_different_mrt_station_query_not_hardcoded(self):
+        """換一個捷運站查詢，確認邏輯非針對單一站名硬編碼"""
+        result = filter_ramen_data({"location": "公館站"})
+        ids = [s["id"] for s in result]
+        assert "shop_gongguan_tonkotsu" in ids
+        assert "shop_zhongshan_tonkotsu" not in ids
+
+    def test_district_query_gets_taipei_prefix(self):
+        result = filter_ramen_data({"location": "大安區"})
+        ids = [s["id"] for s in result]
+        assert "shop_daan_tonkotsu" in ids
+
+    def test_geocode_failure_falls_back_to_string_match(self, monkeypatch):
+        """Geocoding 失敗（回傳 None）時應回退至字串模糊比對"""
+        monkeypatch.setattr(search_skill, "_get_latlng_cached", lambda q: None)
+        result = filter_ramen_data({"location": "中山區"})
+        ids = [s["id"] for s in result]
+        assert "shop_no_coords" in ids
+        assert all("distance_km" not in s for s in result)
+
+    def test_shop_without_coords_falls_back_within_geocoded_query(self):
+        """target_coords 存在時，無座標的店家仍應透過字串比對被納入"""
+        result = filter_ramen_data({"location": "中山區"})
+        ids = [s["id"] for s in result]
+        assert "shop_no_coords" in ids
+
+
+class TestFilterRamenDataStyleAndCombined:
+    def test_style_only_filter_matches_style(self):
+        result = filter_ramen_data({"style": "豚骨"})
+        assert result
+        assert all(s["style"] == "豚骨" for s in result)
+
+    def test_generic_style_keyword_is_ignored(self):
+        """style 為「推薦」等形容詞時應視為未指定，不會過濾掉所有結果"""
+        result = filter_ramen_data({"style": "推薦"})
+        assert result
+
+    def test_combined_location_and_style(self):
+        result = filter_ramen_data({"location": "中山站", "style": "味噌"})
+        ids = [s["id"] for s in result]
+        assert ids == ["shop_zhongshan_miso"]
+
+    def test_no_match_returns_empty_list(self):
+        result = filter_ramen_data({"location": "中山站", "style": "不存在的口味"})
+        assert result == []
+
+    def test_no_filters_returns_capped_results(self):
+        result = filter_ramen_data({})
+        assert len(result) == 3
+
+    def test_more_than_three_matches_capped_at_three(self):
+        result = filter_ramen_data({"style": "豚骨"})
+        assert len(result) == 3
