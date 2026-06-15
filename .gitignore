@@ -13,8 +13,7 @@ ANTIGRAVITY.md
 error.log/
 log/
 .pytest_cache/
-scripts/*
-!scripts/geocode_shops.py
+scripts/
 development_history/
 docs/
 temp.json
