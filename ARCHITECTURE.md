@@ -96,7 +96,7 @@
 LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略應對：
 - **非阻塞處理**：`handle_message` 收到請求後立即啟動 `threading.Thread`，主執行緒直接返回 200，AI 邏輯在背景完成後以 `push_message` 回覆（取代有 60 秒過期限制的 `reply_message`）。啟動時預熱 Firestore、Gemini、Google Maps、Gemini Client Pool，確保首次請求也能快速回應。
 - **快取優先策略 (Cache-First)**：對 API 數據實施 7 天的快取機制，減少重複請求延遲。
-- **預處理機制**：透過 `scripts/data_pipeline.py` 離線完成 IG 數據採集與座標化，確保查詢時不需即時等待；若有店家因人工新增或 Pipeline 中斷而缺少座標，可額外執行 `tools/geocode_shops.py` 補齊，不影響已有座標的店家。
+- **預處理機制**：透過 `scripts/data_pipeline.py` 離線完成 IG 數據採集與座標化，確保查詢時不需即時等待；若有店家因人工新增或 Pipeline 中斷而缺少座標，可額外執行 `data/geocode_shops.py` 補齊，不影響已有座標的店家。
 
 ### 成本控管與效能限制 (Cost Guardrail)
 - **Field Masking**：呼叫 Google Places API 時，僅請求必要欄位，有效降低 API 消耗支出。
@@ -191,8 +191,6 @@ Ramen-Bot/
 │   ├── migrate_knowledge_to_firestore.py # 知識庫向量索引寫入 Firestore（支援 --force）
 │   ├── setup_secrets.ps1                 # 從 .env 一鍵上傳金鑰至 Secret Manager
 │   └── append_new_shops.py               # 將新抓取的店家資料附加至 ramen_data.json（不比對重複）
-├── tools/
-│   └── geocode_shops.py                  # 常駐腳本：補齊 ramen_data.json 缺少的經緯度座標（支援 --dry-run，可重複執行）
 ├── tests/
 │   ├── test_search_skill.py    # Haversine 距離計算、店家摘要建構
 │   ├── test_flex_handler.py    # Bubble 生成、Carousel 組裝
@@ -202,6 +200,7 @@ Ramen-Bot/
 │   ├── ramen_data_template.json    # 欄位格式範本
 │   ├── ramen_data_checkpoint.json  # Pipeline Stage 2 中斷點備份
 │   ├── instagram_data.json         # IG 爬蟲彙整輸出
+│   ├── geocode_shops.py            # 常駐腳本：補齊缺少的經緯度座標（支援 --dry-run，可重複執行，不納入版控）
 │   └── DATA_SCHEMA.md              # 資料結構與 IG 原始資料管理說明（不納入版控）
 ├── log/
 │   └── usage.json          # 每日 API / LLM 用量紀錄（本地開發用）
