@@ -4,7 +4,7 @@
 """
 
 import pytest
-from skills.Search_skill import calculate_distance, build_shop_summary
+from skills.Search_skill import calculate_distance, build_shop_summary, _build_geocode_query
 
 
 # ─── calculate_distance ────────────────────────────────────────────────────────
@@ -91,3 +91,27 @@ class TestBuildShopSummary:
         shop = self._make_shop(features=[])
         result = build_shop_summary(shop)
         assert "特色" not in result
+
+
+# ─── _build_geocode_query ──────────────────────────────────────────────────────
+
+class TestBuildGeocodeQuery:
+    def test_station_name_uses_mrt_prefix(self):
+        """地名以「站」結尾時，應使用「台北捷運」前綴避免比對到同名公車站/地標"""
+        assert _build_geocode_query("中山站") == "台北捷運中山站"
+
+    def test_district_without_city_gets_taipei_prefix(self):
+        """地名未包含市/縣時，預設補上「台北市」前綴"""
+        assert _build_geocode_query("中山區") == "台北市中山區"
+
+    def test_district_name_only_gets_taipei_prefix(self):
+        assert _build_geocode_query("中山") == "台北市中山"
+
+    def test_already_has_city_left_unchanged(self):
+        assert _build_geocode_query("台北市中山區") == "台北市中山區"
+
+    def test_already_has_county_left_unchanged(self):
+        assert _build_geocode_query("新北市板橋區") == "新北市板橋區"
+
+    def test_already_starts_with_taipei_left_unchanged(self):
+        assert _build_geocode_query("台北中山區") == "台北中山區"

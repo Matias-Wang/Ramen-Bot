@@ -142,6 +142,33 @@ def _get_latlng_cached(location: str) -> Optional[Dict[str, float]]:
     return result
 
 
+def _build_geocode_query(location: str) -> str:
+    """
+    根據使用者提供的地名組合 Geocoding API 查詢字串。
+
+    店家資料以台北市為主，地名若未包含縣市資訊，預設補上「台北市」前綴，
+    避免「中山區」等同名地點被解析到外縣市或海外座標。
+    若地名以「站」結尾（捷運/車站名稱），改用「台北捷運」前綴，避免被
+    Geocoding 解析到同名但不相關的巴士站/地標（例如「中山站」被誤判為
+    萬華區的「中山堂(西門)」公車站，導致跨區搜尋結果）。
+
+    Parameters
+    ----------
+    location : str
+        使用者提到的原始地名。
+
+    Returns
+    -------
+    str
+        用於 Geocoding API 的查詢字串。
+    """
+    if location.endswith("站"):
+        return f"台北捷運{location}"
+    if not re.search(r"(市|縣)", location) and not location.startswith("台北"):
+        return f"台北市{location}"
+    return location
+
+
 def calculate_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     """
     使用 Haversine 公式計算兩點間的距離 (公里)。
@@ -201,11 +228,7 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     # --- 地理位置處理 (Geocoding) ---
     target_coords = None
     if target_location:
-        # 店家資料以台北市為主，地名若未包含縣市資訊，預設視為台北市，
-        # 避免「中山區」「中山站」等同名地點被解析到外縣市或海外座標。
-        geocode_location = target_location
-        if not re.search(r"(市|縣)", target_location) and not target_location.startswith("台北"):
-            geocode_location = f"台北市{target_location}"
+        geocode_location = _build_geocode_query(target_location)
 
         _t_geo = time.time()
         target_coords = _get_latlng_cached(geocode_location)

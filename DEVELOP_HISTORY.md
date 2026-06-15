@@ -90,3 +90,31 @@
 ### 修正
 - 執行該腳本補齊 15 筆店家座標，`ramen_data.json` 171 筆店家全數具備有效座標（原始資料已備份至 `data/backup/`）
 
+---
+
+## 2026-06-15 — 修正「系統忙碌中」崩潰、介紹文截斷與站名搜尋跨區問題
+
+### 修正
+- `core/flex_handler.py`：`get_flex_bubble()` 的 `name` / `location` / `style` / `address`
+  欄位改用 `or` 取代 `dict.get(key, default)`。原寫法在欄位「存在但值為 `None`」
+  （例如 Firestore 文件中該欄位為 `null`）時會直接回傳 `None`，導致
+  `quote(name)` 拋出 `TypeError`，此例外發生在 `app.py` 的 `dispatch()` 呼叫範圍之外，
+  最終觸發 `_reply_to_line` 最外層的例外處理，回覆「系統忙碌中，請稍後再試。」。
+  此為使用者回報「詢問中山站拉麵時回覆系統忙碌中」的根因；同一查詢重試時因
+  `random.sample` 抽到不同店家而未觸發崩潰，因而「看似恢復正常」。
+- `core/flex_handler.py`：新增 `_truncate_description()`，將 `description` 欄位
+  的截斷邏輯由單純 `desc[:80]`（會在詞彙中間截斷，例如「...並融入獨特」後突然中止）
+  改為盡量在標點符號處斷句並補上「…」，避免介紹文出現不完整詞彙。
+- `skills/Search_skill.py`：新增 `_build_geocode_query()`，將地名以「站」結尾
+  （例如「中山站」）的查詢改用「台北捷運」前綴（如「台北捷運中山站」），
+  避免 Geocoding API 將「OO站」誤判為同名但不相關的公車站/地標（例如萬華區的
+  「中山堂(西門)」站牌），造成搜尋座標錨點落在錯誤行政區，回傳跨區（如萬華區）
+  的店家。
+
+### 已知待處理（資料問題，非程式邏輯）
+- 使用者詢問「介紹麒麟拉麵」時，比對到的店家為「麒麟創作拉麵坊」，但其
+  `description` 欄位內容描述的卻是另一間店「木麒麟拉麵」（例如：「『木麒麟拉麵』
+  承襲了麒麟本店的精髓...」）。這是 `ramen_data.json` / Firestore
+  `ramen_shops` 資料本身的內容錯置問題（IG 食記與店家對應錯誤），需直接檢視並
+  修正該筆資料的 `description` 欄位，非程式邏輯可修正範圍。
+
