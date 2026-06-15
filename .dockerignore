@@ -16,6 +16,9 @@ __pycache__/
 # 測試，不需在生產環境執行
 tests/
 
+# 本地維護腳本，不需在生產環境執行
+tools/
+
 # 本地資料層（Cloud Run 使用 Firestore，不需要這些）
 data/
 log/
