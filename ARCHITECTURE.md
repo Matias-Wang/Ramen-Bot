@@ -14,6 +14,7 @@
 |SEARCH_BY_CRITERIA|使用者提供地區、口味等搜尋條件|Search Skill|
 |GET_SPECIFIC_INFO|針對特定店名的深入資訊查詢|Info Skill|
 |KNOWLEDGE_QUERY|拉麵流派、點餐禮儀等百科問答|Knowledge Skill|
+|REPORT_ERROR|使用者指正某間店家資料有誤（地址、描述、評分等）|Feedback Skill|
 
 ### 系統架構
 ```
@@ -37,6 +38,12 @@
       |       - 本地：ChromaDB 向量相似度搜尋（Top-3）
       |       - 生產：Firestore KNN find_nearest()（Top-3）
       |       - Gemini 生成拉麵大師風格回答
+      |
+      +-- REPORT_ERROR       → collect_report() → 確認訊息文字
+      |       - 萃取 shop_name + error_description（來自 Gemini 解析）
+      |       - 本地：寫入 log/feedback_reports.json
+      |       - 生產：寫入 Firestore feedback_reports collection
+      |       - 回覆 LINE 使用者確認訊息（TextSendMessage）
       |
 [STEP 3] 推薦文 / 介紹文生成
       |       - SEARCH_BY_CRITERIA：generate_recommendations() — ThreadPoolExecutor +
@@ -76,6 +83,14 @@
 - **Field Masking**：`id, displayName, rating, userRatingCount, formattedAddress, photos`
 - **介紹文生成**：有 `description`（IG 食記）時，以 `INFO_SUMMARY_PROMPT` 呼叫 Gemini 摘要為 100~150 字介紹文（`summarize_description()`）；無 `description` 時回退至 `RECOMMEND_PROMPT` 生成 30-60 字推薦文（同 Search Skill 的 `generate_recommendations`）
 - **輸出格式**：FlexSendMessage 單一 Bubble，含 Map 按鈕 + social_links 按鈕（邏輯與 Search Skill Carousel 相同，使用 `get_flex_bubble()`）
+
+### Feedback Skill (錯誤回報佇列) — `skills/feedback_skill.py`
+- **數據源**：本地 `log/feedback_reports.json` / 生產 Firestore `feedback_reports` collection
+- **核心邏輯**：
+    1. `collect_report(shop_name, error_description, user_id)`：將回報寫入儲存（雙路徑），每筆含 UUID、時間戳、`status="pending"`
+    2. `check_pending_reports()`：於 `app.py` 啟動時自動呼叫，讀取 `status=pending` 的回報並印出至 console
+- **修正流程**：人工確認後，將回報的 `status` 欄位改為 `"resolved"`（不再被 `check_pending_reports` 列出）
+- **輸出格式**：TextSendMessage 確認訊息（不使用 Flex）
 
 ### Knowledge Skill (RAG 知識庫) — `skills/knowledge_skill.py`
 - **數據源**：`knowledge/` 目錄下的 `.txt` / `.md` 知識文件
@@ -178,7 +193,8 @@ Ramen-Bot/
 ├── skills/
 │   ├── Search_skill.py     # [SKILL 1] 條件搜尋（本地 JSON / Firestore 雙路徑）
 │   ├── info_skill.py       # [SKILL 2] 特定店家即時資訊（本地 JSON / Firestore 雙路徑）
-│   └── knowledge_skill.py  # [SKILL 3] RAG 知識庫（ChromaDB 本地 / Firestore KNN 雙路徑）
+│   ├── knowledge_skill.py  # [SKILL 3] RAG 知識庫（ChromaDB 本地 / Firestore KNN 雙路徑）
+│   └── feedback_skill.py   # [SKILL 4] 錯誤回報佇列（本地 JSON / Firestore 雙路徑）
 ├── services/
 │   ├── google_maps.py          # Google Maps API 統一封裝
 │   └── firestore_client.py     # Firestore Client Singleton（全域共用連線）
@@ -203,7 +219,8 @@ Ramen-Bot/
 │   ├── geocode_shops.py            # 常駐腳本：補齊缺少的經緯度座標（支援 --dry-run，可重複執行，不納入版控）
 │   └── DATA_SCHEMA.md              # 資料結構與 IG 原始資料管理說明（不納入版控）
 ├── log/
-│   └── usage.json          # 每日 API / LLM 用量紀錄（本地開發用）
+│   ├── usage.json              # 每日 API / LLM 用量紀錄（本地開發用）
+│   └── feedback_reports.json   # 使用者錯誤回報佇列（本地開發用，生產用 Firestore）
 ├── knowledge/
 │   └── .chroma_db/         # ChromaDB 向量索引（本地自動生成，不納入版控；來源 .md 已於索引建立後移除）
 └── .env                    # 密鑰管理（不納入版控）

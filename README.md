@@ -49,6 +49,7 @@
 - ✅ 特定店家查詢（GET_SPECIFIC_INFO）同樣輸出 Flex Bubble，含 Map 按鈕與社群連結
 - ✅ 每日 API / LLM 用量追蹤與配額保護
 - ✅ RAG 拉麵知識庫問答（ChromaDB + Google Embedding + Gemini 生成）
+- ✅ 使用者錯誤回報（REPORT_ERROR intent → 收集至 `log/feedback_reports.json` / Firestore，啟動時自動列出待處理項目）
 - ✅ 全局 Fallback 機制（任一 Skill 失敗均能優雅降級）
 - ✅ 非阻塞 Webhook 處理（背景 Thread，防止 LINE 1 秒逾時）
 
@@ -74,6 +75,7 @@
 1. **Search Skill** (`skills/Search_skill.py`)：地理位置 + 口味條件篩選，非同步推薦文生成。
 2. **Info Skill** (`skills/info_skill.py`)：整合 Google Maps API，7 天快取策略取得即時評分與照片。
 3. **Knowledge Skill** (`skills/knowledge_skill.py`)：RAG 知識庫問答，ChromaDB 向量搜尋 + Gemini 生成。
+4. **Feedback Skill** (`skills/feedback_skill.py`)：收集使用者在 LINE 對話中的店家資料錯誤回報，支援本地 JSON 與 Firestore 雙路徑儲存，啟動時自動列出待處理項目。
 
 ### 目錄結構 (Directory Structure)
 ```
@@ -91,7 +93,8 @@ Ramen-Bot/
 ├── skills/
 │   ├── Search_skill.py     # [SKILL 1] 條件搜尋
 │   ├── info_skill.py       # [SKILL 2] 特定店家資訊
-│   └── knowledge_skill.py  # [SKILL 3] RAG 知識庫問答
+│   ├── knowledge_skill.py  # [SKILL 3] RAG 知識庫問答
+│   └── feedback_skill.py   # [SKILL 4] 使用者錯誤回報佇列
 ├── services/
 │   ├── google_maps.py          # Google Maps API 統一封裝
 │   └── firestore_client.py     # Firestore Client Singleton（全域共用連線）
@@ -104,7 +107,8 @@ Ramen-Bot/
 ├── data/
 │   └── ramen_data.json     # 主資料庫（本地開發）
 └── log/
-    └── usage.json          # 每日 API 用量紀錄（本地開發）
+    ├── usage.json              # 每日 API 用量紀錄（本地開發）
+    └── feedback_reports.json   # 使用者錯誤回報佇列（本地開發）
 ```
 
 ### 核心模組用途
@@ -195,7 +199,7 @@ python app.py
 5. UI 組裝：SEARCH → `assemble_carousel()` Flex Carousel；INFO → `get_flex_bubble()` 單一 Bubble → 回傳 LINE
 
 ### 核心邏輯
-- **意圖解析**：只取必要欄位（intent, location, style, shop_name, ui_tag）
+- **意圖解析**：只取必要欄位（intent, location, style, shop_name, query, ui_tag）；支援四種 intent：SEARCH_BY_CRITERIA / GET_SPECIFIC_INFO / KNOWLEDGE_QUERY / REPORT_ERROR
 - **地理篩選**：Geocoding 取座標 → Haversine 2km；無座標則字串 fallback；>3 筆則 random.sample
 - **推薦文**：30-60 字繁體中文，溫度 0.6，max_output_tokens 400
 - **快取**：Info Skill 7 天 TTL，過期才呼叫 Places API
