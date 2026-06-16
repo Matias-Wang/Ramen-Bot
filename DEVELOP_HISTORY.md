@@ -118,3 +118,18 @@
   `ramen_shops` 資料本身的內容錯置問題（IG 食記與店家對應錯誤），需直接檢視並
   修正該筆資料的 `description` 欄位，非程式邏輯可修正範圍。
 
+---
+
+## 2026-06-16 — 強化 filter_ramen_data 測試覆蓋
+
+### 新增
+- `tests/test_search_skill.py` 新增 11 個測試案例（`TestFilterRamenDataLocationQueries`、`TestFilterRamenDataStyleAndCombined`），直接針對 `filter_ramen_data()` 核心邏輯：
+  - 捷運站查詢回傳鄰近店家並依距離排序
+  - 不同捷運站查詢（公館站）驗證邏輯非針對單一站名硬編碼
+  - 行政區查詢自動補上「台北市」前綴
+  - Geocoding 失敗時回退至字串模糊比對
+  - 無座標店家透過字串比對納入結果
+  - style 過濾、通用詞（「推薦」）不過濾、組合查詢、無結果回傳空清單、超過 3 筆隨機抽 3 筆上限
+- `_mock_search_dependencies` autouse fixture，以固定測試資料與模擬 Geocoding 取代 `_load_all_shops` / `_get_latlng_cached`，不依賴實際 `ramen_data.json` 或 Google Maps API
+- 全套測試由 59 個增至 70 個，全數通過（commit `ffed325`，CI/CD 部署成功）
+

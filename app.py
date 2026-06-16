@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from core.agent_router import AgentRouter
 from core.flex_handler import assemble_carousel, get_flex_bubble
 from core.usage_tracker import check_and_increment
+from skills.feedback_skill import collect_report, check_pending_reports
 
 # === 自定義變數 ===
 RED = '\033[91m'
@@ -86,6 +87,12 @@ try:
 except Exception as e:
     print(f"{YELLOW}[STARTUP] 推薦文 Client Pool 預熱失敗（非致命）: {e}{RESET}")
 
+# 回報佇列待處理確認（啟動時自動列出，提醒開發者有待處理的使用者回報）
+try:
+    check_pending_reports()
+except Exception as e:
+    print(f"{YELLOW}[STARTUP] 回報佇列讀取失敗（非致命）: {e}{RESET}")
+
 # Firestore gRPC 心跳啟動（DATA_BACKEND=firestore 時才啟動，防止 gRPC 連線閒置超時）
 if os.getenv("DATA_BACKEND", "local") == "firestore":
     try:
@@ -141,7 +148,23 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
             )
             return
 
-        # 知識庫問答
+        # 錯誤回報收集
+        if intent == "REPORT_ERROR":
+            report_info = data[0] if data else {}
+            collect_report(
+                shop_name=report_info.get("shop_name"),
+                error_description=report_info.get("error_description", ""),
+                user_id=user_id,
+            )
+            check_and_increment("line_api")
+            line_bot_api.push_message(
+                user_id,
+                TextSendMessage(
+                    text="感謝您的回報！已記錄您的意見，我們將盡快確認並修正相關資料。"
+                ),
+            )
+            return
+
         if intent == 'KNOWLEDGE_QUERY':
             check_and_increment("line_api")
             line_bot_api.push_message(
@@ -247,6 +270,14 @@ if __name__ == "__main__":
                     msg = res.get('message') or '（無回答）'
                     label = '知識庫回答' if intent == 'KNOWLEDGE_QUERY' else '系統錯誤訊息'
                     print(f"{CYAN}  => {label}：\n{msg}{RESET}")
+                elif intent == "REPORT_ERROR":
+                    report_info = (res.get("data") or [{}])[0]
+                    collect_report(
+                        shop_name=report_info.get("shop_name"),
+                        error_description=report_info.get("error_description", ""),
+                        user_id="local_test_user",
+                    )
+                    print(f"{CYAN}  => 回報已記錄。{RESET}")
                 elif res.get('ui_tag') == 'CAROUSEL' and res.get('data'):
                     carousel_contents = assemble_carousel(res['data'], res.get('recommendations'))
                     with open('temp.json', 'w', encoding='utf-8') as f:

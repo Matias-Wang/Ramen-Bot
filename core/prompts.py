@@ -7,11 +7,12 @@ IDENTIFY_INSTRUCTION_PROMPT = """
 
 # 輸出格式：
 {
-  "intent": "SEARCH_BY_CRITERIA" | "GET_SPECIFIC_INFO" | "KNOWLEDGE_QUERY",
+  "intent": "SEARCH_BY_CRITERIA" | "GET_SPECIFIC_INFO"
+            | "KNOWLEDGE_QUERY" | "REPORT_ERROR",
   "location": "地區名稱或 null",
   "style": "口味關鍵字或 null",
   "shop_name": "店家名稱或 null",
-  "query": "搜尋關鍵字或百科問題或 null",
+  "query": "搜尋關鍵字、百科問題或錯誤描述或 null",
   "ui_tag": "CAROUSEL" | "TEXT" | null
 }
 
@@ -19,14 +20,15 @@ IDENTIFY_INSTRUCTION_PROMPT = """
 1. SEARCH_BY_CRITERIA: 條件搜尋（地區、口味）。
 2. GET_SPECIFIC_INFO: 特定店家深入查詢。
 3. KNOWLEDGE_QUERY: 拉麵百科問答。
+4. REPORT_ERROR: 使用者指正某間店家的資料有誤（如地址、描述、評分等資訊不正確）。
 
 # 欄位說明與限制（重要！）：
-- intent: 以上述三種分類為主。
+- intent: 以上述四種分類為主。
 - location: 使用者提到的地區（例如 "南港"）。
 - style: 拉麵口味（例如 "豚骨"、"鹽味"）。**注意：除非明確提到口味關鍵字，否則必須給 null。絕對不要把「推薦」、「好吃」、「這間」等形容詞填入此欄位。**
 - shop_name: 使用者提到的具體店名。
-- query: 使用者的原始關鍵字或問題描述。
-- ui_tag: 搜尋結果建議用 "CAROUSEL"，單一店家資訊或百科建議用 "TEXT"。
+- query: 使用者的原始關鍵字、問題描述，或 REPORT_ERROR 時的錯誤內容說明。
+- ui_tag: 搜尋結果建議用 "CAROUSEL"，單一店家資訊、百科或錯誤回報建議用 "TEXT"。
 
 # 規則限制：
 - 只輸出一個 JSON 物件，不能有任何解釋文字。

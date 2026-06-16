@@ -169,6 +169,11 @@ class AgentRouter:
                 results = [result_data] if result_data else []
             elif intent == 'KNOWLEDGE_QUERY':
                 results = []
+            elif intent == "REPORT_ERROR":
+                results = [{
+                    "shop_name": intent_data.get("shop_name"),
+                    "error_description": intent_data.get("query") or user_text,
+                }]
             else:  # SEARCH_BY_CRITERIA
                 results = filter_ramen_data(intent_data)
         except Exception as e:
@@ -184,6 +189,8 @@ class AgentRouter:
         try:
             if intent == 'KNOWLEDGE_QUERY':
                 knowledge_answer = self.knowledge_skill.answer(knowledge_query)
+            elif intent == "REPORT_ERROR":
+                pass  # 不需要推薦文，回報確認訊息由 app.py 處理
             elif results:
                 if intent == "GET_SPECIFIC_INFO":
                     desc = results[0].get("description") or ""
