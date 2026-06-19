@@ -134,7 +134,7 @@ class TestDispatchGetSpecificInfo:
         router.info_skill.get_shop_info.return_value = _SAMPLE_SHOP
         monkeypatch.setattr(
             "core.agent_router.summarize_description",
-            lambda desc, client, model: "LLM 摘要推薦文",
+            lambda shop, client, model: "LLM 摘要推薦文",
         )
 
         result = router.dispatch("介紹一下流水線拉麵")

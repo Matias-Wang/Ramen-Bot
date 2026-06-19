@@ -6,9 +6,9 @@ __pycache__/
 
 # Agent 相關文件
 CLAUDE.md
-GEMINI.md
-ANTIGRAVITY.md
+AGNETS.md
 .claude
+.agents
 
 error.log/
 log/

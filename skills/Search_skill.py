@@ -420,14 +420,17 @@ def generate_recommendations(
         return [""] * len(selected)
 
 
-def summarize_description(description: str, client: Any, model_name: str) -> str:
+def summarize_description(shop: Dict[str, Any], client: Any, model_name: str) -> str:
     """
-    將店家完整 IG 食記內容摘要為約 100~150 字的介紹文字。
+    將店家資料（含 style、features、完整 IG 食記）摘要為約 100~150 字的介紹文字。
+
+    輸入欄位與 generate_recommendations() 比照一致，皆透過 build_shop_summary()
+    建構，確保兩條 Skill 路徑提供給 LLM 的店家資訊範圍相同。
 
     Parameters
     ----------
-    description : str
-        店家的完整 IG 食記原文。
+    shop : Dict[str, Any]
+        單一店家完整資料。
     client : Any
         Gemini client 實例。
     model_name : str
@@ -442,7 +445,8 @@ def summarize_description(description: str, client: Any, model_name: str) -> str
     try:
         if not check_and_increment("llm_gemini"):
             return default
-        prompt = INFO_SUMMARY_PROMPT.format(description=description)
+        shop_summary = build_shop_summary(shop)
+        prompt = INFO_SUMMARY_PROMPT.format(shop_summary=shop_summary)
         result = client.models.generate_content(
             model=model_name,
             contents=prompt,

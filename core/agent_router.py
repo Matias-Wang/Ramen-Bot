@@ -195,9 +195,11 @@ class AgentRouter:
                 if intent == "GET_SPECIFIC_INFO":
                     desc = results[0].get("description") or ""
                     if desc:
-                        # 將完整 IG 食記摘要為較長的介紹文字
+                        # 將店家資料（含 style/features/description）摘要為較長的介紹文字
                         recommendations = [
-                            summarize_description(desc, self.client, self.model_name)
+                            summarize_description(
+                                results[0], self.client, self.model_name
+                            )
                         ]
                     else:
                         # 無預存描述（店家未收錄於知識庫），即時呼叫 Gemini 生成推薦文
