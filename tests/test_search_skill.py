@@ -180,6 +180,13 @@ def _make_test_shops() -> list[dict]:
             "style": "豚骨",
             "coordinates": {"lat": 24.993, "lng": 121.301},
         },
+        {
+            "id": "shop_missing_location",
+            "name": "缺地區欄位拉麵",
+            "location": None,
+            "style": "豚骨",
+            "coordinates": {"lat": 25.0521, "lng": 121.5198},
+        },
     ]
 
 
@@ -234,6 +241,33 @@ class TestFilterRamenDataLocationQueries:
         result = filter_ramen_data({"location": "中山區"})
         ids = [s["id"] for s in result]
         assert "shop_no_coords" in ids
+
+    def test_district_query_skips_geocoding_and_uses_string_match(self, monkeypatch):
+        """行政區查詢應完全跳過 Geocoding，改用 location 欄位字串比對。
+
+        實測真實 API：「中山區」Geocoding 回傳的幾何中心點離店家聚集處超過
+        2km，且半徑放大到能涵蓋整區時會等量誤抓鄰近行政區店家（無安全半徑
+        值），故行政區查詢不應呼叫 Geocoding，避免重現此問題。
+        """
+        calls = []
+        monkeypatch.setattr(
+            search_skill,
+            "_get_latlng_cached",
+            lambda q: calls.append(q) or {"lat": 0.0, "lng": 0.0},
+        )
+        result = filter_ramen_data({"location": "中山區"})
+        ids = [s["id"] for s in result]
+        assert calls == []
+        assert "shop_zhongshan_tonkotsu" in ids
+        assert "shop_zhongshan_miso" in ids
+        assert "shop_daan_tonkotsu" not in ids
+        assert all("distance_km" not in s for s in result)
+
+    def test_district_query_excludes_shop_with_missing_location(self):
+        """location 欄位為 None 的店家不應因空字串比對而誤配對任何行政區查詢。"""
+        result = filter_ramen_data({"location": "中山區", "style": "豚骨"})
+        ids = [s["id"] for s in result]
+        assert "shop_missing_location" not in ids
 
 
 class TestFilterRamenDataStyleAndCombined:

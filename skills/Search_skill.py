@@ -227,7 +227,13 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # --- 地理位置處理 (Geocoding) ---
     target_coords = None
-    if target_location:
+    # 行政區（區/市/縣結尾）面積大且形狀不規則，Geocoding 回傳的幾何中心點常
+    # 離店家聚集處超過 2km；實測顯示半徑放大到能涵蓋整個行政區時，也會等量
+    # 圈入鄰近行政區的店家（無安全半徑值，例如中山區需 4km 才能涵蓋全部店家，
+    # 但同半徑下會多圈入 22 間大安/內湖/士林/新竹店家）。故行政區查詢改為直接
+    # 比對店家 location 欄位字串，僅捷運站等精確點查詢才使用 Geocoding + Haversine。
+    is_district_query = bool(re.search(r"(區|市|縣)$", target_location))
+    if target_location and not is_district_query:
         geocode_location = _build_geocode_query(target_location)
 
         _t_geo = time.time()
@@ -278,13 +284,19 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 # 店家無座標資料，則回退至字串比對
                 clean_target_loc = target_location.replace("市", "").replace("區", "").replace("縣", "")
                 shop_loc = shop.get("location") or ""
-                if clean_target_loc in shop_loc or shop_loc in clean_target_loc:
+                # shop_loc 為空字串時，"" in clean_target_loc 恆為 True，
+                # 須先排除以避免缺少 location 欄位的店家誤配對任何地區查詢。
+                if shop_loc and (
+                    clean_target_loc in shop_loc or shop_loc in clean_target_loc
+                ):
                     match_location = True
         else:
             # 無目標座標資料，使用字串比對
             clean_target_loc = target_location.replace("市", "").replace("區", "").replace("縣", "")
             shop_loc = shop.get("location") or ""
-            if clean_target_loc in shop_loc or shop_loc in clean_target_loc:
+            if shop_loc and (
+                clean_target_loc in shop_loc or shop_loc in clean_target_loc
+            ):
                 match_location = True
 
         if match_location:

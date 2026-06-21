@@ -67,9 +67,13 @@
 - **數據源**：本地 `data/ramen_data.json` / 生產 Firestore `ramen_shops` collection + Geocoding API
 - **核心邏輯**：
     1. 口味比對：`target_style in shop["style"]` 模糊比對
-    2. 地區比對（優先序）：
-       - 有座標 → Geocoding 取目標座標 → Haversine 計算距離 → **2km** 以內
-       - 無座標 → 字串去除「市/區/縣」後模糊比對 fallback
+    2. 地區比對（依查詢類型分流）：
+       - 行政區查詢（地名以「區/市/縣」結尾）→ 跳過 Geocoding，直接以字串去除
+         「市/區/縣」後比對 `shop["location"]`。原因：行政區面積大且形狀不
+         規則，Geocoding 回傳的幾何中心點常離店家聚集處 2km 以上，放大半徑
+         又會等量誤抓鄰近行政區店家，無安全半徑值（見 PENDING.md 中山區案例）
+       - 捷運站等精確點查詢 → Geocoding 取目標座標 → Haversine 計算距離 →
+         **2km** 以內；查無座標則同樣回退至上述字串比對
     3. 結果依 `distance_km` 排序（若有座標），超過 3 筆則 `random.sample` 隨機抽選
 - **推薦文生成**：`ThreadPoolExecutor` + 預熱 Client Pool 並行呼叫 Gemini，最多 3 筆
 - **輸出格式**：FlexSendMessage Carousel（最多 3 個 bubble，含 Map 按鈕 + social_links 按鈕）

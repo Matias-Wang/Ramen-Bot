@@ -41,7 +41,7 @@
 ## 功能特色（Features）
 - ✅ LINE 對話式拉麵推薦（自然語言輸入即可查詢）
 - ✅ Gemini 解析意圖（地區、口味、意圖分類、店名）
-- ✅ 地理距離過濾（Geocoding + Haversine 2km 半徑，超過 3 筆隨機抽選）
+- ✅ 地理距離過濾（行政區查詢比對 `location` 欄位字串；捷運站等精確點查詢用 Geocoding + Haversine 2km 半徑；超過 3 筆隨機抽選）
 - ✅ 本地資料庫快速篩選符合店家
 - ✅ Flex Carousel 顯示店家資訊（評分、地址、Map 按鈕、社群連結）
 - ✅ AI 生成推薦文（ThreadPoolExecutor + 預熱 Client Pool 並行生成，SEARCH 最多 3 筆、INFO 1 筆）
@@ -200,7 +200,7 @@ python app.py
 
 ### 核心邏輯
 - **意圖解析**：只取必要欄位（intent, location, style, shop_name, query, ui_tag）；支援四種 intent：SEARCH_BY_CRITERIA / GET_SPECIFIC_INFO / KNOWLEDGE_QUERY / REPORT_ERROR
-- **地理篩選**：Geocoding 取座標 → Haversine 2km；無座標則字串 fallback；>3 筆則 random.sample
+- **地理篩選**：行政區查詢（區/市/縣結尾）直接比對 `location` 欄位字串，跳過 Geocoding；捷運站等精確點查詢用 Geocoding 取座標 → Haversine 2km；無座標則同樣回退字串 fallback；>3 筆則 random.sample
 - **推薦文**：30-60 字繁體中文，溫度 0.6，max_output_tokens 400
 - **快取**：Info Skill 7 天 TTL，過期才呼叫 Places API
 

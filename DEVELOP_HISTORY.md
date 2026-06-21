@@ -133,3 +133,26 @@
 - `_mock_search_dependencies` autouse fixture，以固定測試資料與模擬 Geocoding 取代 `_load_all_shops` / `_get_latlng_cached`，不依賴實際 `ramen_data.json` 或 Google Maps API
 - 全套測試由 59 個增至 70 個，全數通過（commit `ffed325`，CI/CD 部署成功）
 
+---
+
+## 2026-06-21 — 修正行政區查詢無安全半徑值問題
+
+### 修正
+- `skills/Search_skill.py`：`filter_ramen_data()` 新增 `is_district_query`
+  判斷（地名以「區/市/縣」結尾），行政區查詢完全跳過 Geocoding，改走既有
+  字串比對 fallback（比對 `shop["location"]`）。根因：實測 Geocoding API，
+  「中山區」回傳的幾何中心點 `(25.0792, 121.5427)` 落在區域邊緣，離店家
+  聚集處（中山站周邊）超過 2.3km，2km 半徑內 0 間符合；放大半徑至 4km
+  （涵蓋全部 21 間中山區店家）會同時誤抓 22 間大安/內湖/士林/新竹店家，
+  確認半徑法在此資料集無安全值。捷運站等精確點查詢維持原 Geocoding +
+  Haversine 2km 邏輯不變。
+- 連帶修正字串比對 fallback 既有潛在 bug：`location` 欄位為空字串的店家會
+  因 `"" in clean_target_loc` 恆為 True 誤判為符合任何地區查詢，已加上
+  `shop_loc and (...)` 防呆，兩處重複邏輯同步修正。
+
+### 新增
+- `tests/test_search_skill.py` 新增 3 個測試案例（行政區查詢跳過 Geocoding、
+  地區字串正確比對排除其他區、`location` 為空的店家不誤配對），測試
+  fixture 新增 `shop_missing_location`。全套測試由 88 個增至 90 個，全數
+  通過（review/review_20260621_1721.md，PASSED）。
+
