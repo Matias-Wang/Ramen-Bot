@@ -182,6 +182,23 @@ class InfoSkill:
             _was_existing = target_shop is not None
             details = self.gmaps_service.get_shop_details(shop_name, location)
 
+            if details and not target_shop:
+                # 全新店家（本地資料庫未收錄）時，Google Places API 的文字
+                # 搜尋可能模糊比對到完全不相關的店家（例如查詢不存在的拉麵
+                # 店名時，誤配到附近的火鍋店），故須驗證 API 回傳店名與查詢
+                # 店名的相似度，避免將不相關結果當作有效資料回傳。
+                api_name = details.get("name") or ""
+                similarity = difflib.SequenceMatcher(
+                    None, shop_name, api_name
+                ).ratio()
+                if similarity < FUZZY_MATCH_THRESHOLD:
+                    print(
+                        f"{YELLOW}STEP 2: Google Maps 回傳「{api_name}」與查詢"
+                        f"「{shop_name}」相似度過低（{similarity:.2f}），"
+                        f"視為查無此店{RESET}"
+                    )
+                    details = None
+
             if details:
                 fallback_img = (
                     target_shop.get("image_url") if target_shop else None
