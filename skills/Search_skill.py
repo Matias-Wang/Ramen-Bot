@@ -249,6 +249,10 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     SEARCH_RADIUS_KM = 2.0
 
     for _shop in all_shops:
+        # 已標記暫停營業的店家不應推薦給使用者
+        if "暫停營業" in (_shop.get("name") or ""):
+            continue
+
         shop = copy.copy(_shop)  # 防止寫入 distance_km 汙染快取中的原始 dict
         # 1. 口味比對 (Fuzzy Match)
         shop_style = shop.get("style") or ""

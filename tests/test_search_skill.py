@@ -187,6 +187,13 @@ def _make_test_shops() -> list[dict]:
             "style": "豚骨",
             "coordinates": {"lat": 25.0521, "lng": 121.5198},
         },
+        {
+            "id": "shop_closed",
+            "name": "中山暫停拉麵(暫停營業)",
+            "location": "台北市中山區",
+            "style": "豚骨",
+            "coordinates": {"lat": 25.0530, "lng": 121.5200},
+        },
     ]
 
 
@@ -271,6 +278,12 @@ class TestFilterRamenDataLocationQueries:
 
 
 class TestFilterRamenDataStyleAndCombined:
+    def test_closed_shop_is_excluded(self):
+        """店名標記「暫停營業」的店家不應出現在任何搜尋結果中。"""
+        result = filter_ramen_data({"location": "中山區", "style": "豚骨"})
+        ids = [s["id"] for s in result]
+        assert "shop_closed" not in ids
+
     def test_style_only_filter_matches_style(self):
         result = filter_ramen_data({"style": "豚骨"})
         assert result
