@@ -82,6 +82,10 @@ def check_and_increment(key: str) -> bool:
     bool
         True 表示可繼續執行；False 表示已達當日上限。
     """
+    if os.getenv("E2E_TEST_MODE") == "1":
+        print(f"{YELLOW}STEP: E2E_TEST_MODE 啟用，{key} 配額檢查略過（不計入每日配額）{RESET}")
+        return True
+
     print(f"{GREEN}STEP: 檢查 {key} 使用配額{RESET}")
     try:
         data = _load()
@@ -114,6 +118,9 @@ def record_tokens(tokens: int) -> None:
     tokens : int
         本次呼叫消耗的 token 總量。
     """
+    if os.getenv("E2E_TEST_MODE") == "1":
+        return
+
     try:
         data = _load()
         data = _reset_if_new_day(data)

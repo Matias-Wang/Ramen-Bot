@@ -55,7 +55,14 @@ def router() -> Generator:
          patch("core.agent_router.InfoSkill") as mock_info_cls, \
          patch("core.agent_router.KnowledgeSkill") as mock_knowledge_cls, \
          patch("core.agent_router.check_and_increment", return_value=True), \
-         patch("core.agent_router.record_tokens"):
+         patch("core.agent_router.record_tokens"), \
+         patch("skills.Search_skill.check_and_increment", return_value=True), \
+         patch("skills.Search_skill.record_tokens"):
+        # SEARCH_BY_CRITERIA／GET_SPECIFIC_INFO 路徑會呼叫
+        # skills.Search_skill 的 generate_recommendations／
+        # summarize_description，其內部使用該檔案自己 import 的
+        # check_and_increment／record_tokens 參照，與 core.agent_router
+        # 的參照是不同物件，須個別 patch，否則會寫入真實 log/usage.json。
         from core.agent_router import AgentRouter
         r = AgentRouter("test-model")
         r.info_skill = mock_info_cls.return_value
