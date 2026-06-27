@@ -4,7 +4,7 @@
 """
 
 import pytest
-from core.flex_handler import get_flex_bubble, assemble_carousel, _truncate_description
+from core.flex_handler import get_flex_bubble, assemble_carousel
 
 
 # ─── 測試輔助 ──────────────────────────────────────────────────────────────────
@@ -125,25 +125,6 @@ class TestGetFlexBubble:
         bubble = get_flex_bubble(_make_shop(name=None))
         map_button = bubble["footer"]["contents"][0]
         assert isinstance(map_button["action"]["uri"], str)
-
-
-# ─── _truncate_description ─────────────────────────────────────────────────────
-
-class TestTruncateDescription:
-    def test_short_description_unchanged(self):
-        assert _truncate_description("短描述") == "短描述"
-
-    def test_long_description_truncated_with_ellipsis(self):
-        long_desc = "「木麒麟拉麵」承襲了麒麟本店的精髓，並融入獨特風味與創意配料，每一碗都堅持手作高湯，使用嚴選食材熬製數小時，深受饕客喜愛，是中山區巷弄裡的隱藏美食，值得排隊一試再試。"
-        result = _truncate_description(long_desc)
-        assert result.endswith("…")
-        assert len(result) <= 80
-
-    def test_truncation_cuts_at_punctuation_not_mid_word(self):
-        """截斷時應在標點符號處斷句，不應在詞彙中間截斷（避免「並融入獨特」式的斷字）"""
-        desc = "今天天氣很好，適合吃拉麵配啤酒慶祝週末，店家氣氛溫馨。"
-        result = _truncate_description(desc, max_len=10)
-        assert result == "今天天氣很好…"
 
 
 # ─── assemble_carousel ─────────────────────────────────────────────────────────

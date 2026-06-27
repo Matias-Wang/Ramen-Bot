@@ -156,3 +156,98 @@
   fixture 新增 `shop_missing_location`。全套測試由 88 個增至 90 個，全數
   通過（review/review_20260621_1721.md，PASSED）。
 
+---
+
+## 2026-06-26 — 重建新店家資料建立流程，取代失效的 IG 爬蟲 Pipeline
+
+### 新增
+- `scripts/build_new_shops.py`：取代原先已失效的 `ig_scraper.py`／
+  `data_pipeline.py`。直接掃描 `data/resource/*/your_instagram_activity/media/posts_1.json`
+  （IG 官方「下載你的資料」匯出包，使用者已將 `data/newdata/` 改名為
+  `data/resource/` 以符合慣例），修正 IG 匯出常見的 Latin-1/UTF-8 雙重編碼
+  亂碼，排除已存在於 `ramen_data.json` 的貼文 id 與空白文案後，呼叫
+  Gemini（`google-genai` SDK，沿用 `core/agent_router.py` 既有呼叫慣例）
+  批次判斷是否為拉麵食記並結構化提取，再呼叫新增的
+  `services/google_maps.py` 的 `verify_shop_status()` 驗證營業狀態與座標、
+  過濾永久歇業店家，最終輸出候選清單至 `data/ramen_data_new_<時間戳>.json`，
+  不直接覆寫 `ramen_data.json`，供人工確認後執行既有的
+  `scripts/append_new_shops.py` 合併。
+- `services/google_maps.py` 新增 `verify_shop_status()` 方法：Places API
+  (New) Text Search，Field Mask 為 `places.id`、`places.businessStatus`、
+  `places.location`、`places.formattedAddress`，與既有 `get_shop_details()`
+  （評分/照片用途）職責分離。
+
+### 移除
+- 刪除 `scripts/ig_scraper.py`、`scripts/data_pipeline.py`：兩者已於
+  `PENDING.md`（2026-06 維護紀要）標記為無法直接執行（依賴套件未列在
+  `requirements.txt`、預期輸入檔案不存在、`ig_scraper.py` schema 與
+  `ramen_data.json` 不相容且會整份覆寫資料），且全專案無程式碼引用，
+  確認可安全刪除。
+
+### 驗證
+- 實測執行 `build_new_shops.py`：掃描兩包 `data/resource/` 匯出資料，找到
+  5 筆新貼文，全數判定為拉麵食記並通過 Places API 驗證取得
+  `place_id`／座標／地址，輸出格式與 `ramen_data.json` schema 一致。
+  全套 95 個測試通過（review/review_20260626_1645.md，PASSED）。
+
+---
+
+## 2026-06-27 — 修正 build_new_shops.py 三項正確性問題，建立 add-new-shops skill
+
+### 修正
+- `scripts/build_new_shops.py`：人工檢視前一日新增腳本的實際輸出後發現三個問題：
+  1. `description` 被 Gemini 改寫/摘要，非原始文案。已移除 prompt 中的
+     `description` 輸出欄位，最終 `description` 一律取自程式碼層解析（僅修正
+     IG 匯出常見的 Latin-1/UTF-8 雙重編碼亂碼），LLM 完全不參與此欄位生成。
+  2. `media_id_to_ig_url()`（沿用自舊版 `data_pipeline.py`）對媒體檔名數字
+     做 base64 還原以重建貼文短碼，但用 `ramen_data.json` 中已知的
+     id/真實短碼配對反向驗證後證實此演算法從根本上是錯的；且 IG 官方
+     「下載你的資料」匯出包本身不含貼文短碼/permalink，此資訊無法從這個
+     資料來源推導。已移除此函式，`social_links` 改為誠實留空（`null`），
+     需要真實連結時由人工查找後手動補上。
+  3. `image_url` 原本寫入本機檔案相對路徑（非有效 URL，等同於當天另一個
+     獨立發現的「131 家既有店家圖片皆為佔位圖」問題根因）。已改為取得
+     `place_id` 後呼叫 `GoogleMapsService.get_photo_by_place_id()`
+     取得真實 `https://lh3.googleusercontent.com/...` 照片。
+- 重新執行驗證：5 筆候選資料三項問題皆修正確認，全套 95 個測試通過
+  （review/review_20260627_0027.md，PASSED）。
+
+### 新增
+- `.claude/skills/add-new-shops/SKILL.md`：將「掃描 `data/resource/` →
+  Gemini 提取 → Places 驗證 → 人工審查清單 → 合併 → 視情況同步 Firestore」
+  整個流程寫成 Claude Code skill，供使用者每月手動執行一次。內含審查
+  checklist（description 必須逐字、image_url 必須是 https 或 null、
+  social_links 必須是 null）與 Google Maps API 每日配額暫時放寬的標準
+  操作程序。
+
+### 移除
+- `scripts/geocode_shops.py`：與 `data/geocode_shops.py`
+  diff 比對後確認為舒舊重複檔（無 `--dry-run`、無備份、路徑處理較粗略），
+  `ARCHITECTURE.md` 已文件化 `data/geocode_shops.py` 為正式版本，全專案
+  無任何地方引用 `scripts/` 版本，確認安全移除。
+- `scripts/address_consistency_check.py`：比對邏輯依賴
+  `address_raw`/`ig_address` 欄位，但確認全專案歷來無任何腳本（含已移除的
+  `data_pipeline.py` 與新的 `build_new_shops.py`）寫入過此欄位，
+  `ramen_data.json` 171 筆均無此欄位，執行時 100% 跳過比對、從未真正
+  標記過任何結果，屬於從未發揮作用的死碼，確認移除。
+
+---
+
+## 2026-06-28 — 修正 build_new_shops.py 單張照片貼文文案遺漏 bug，合併 9 筆新店家
+
+### 修正
+- `scripts/build_new_shops.py` `collect_candidate_posts()`：使用者質疑前次（2026-06-27）
+  僅找到 5 筆候選店家「不可能只有五筆」，重新比對 IG 匯出 schema 後發現：單張照片貼文的文案
+  實際存放在 `media[0]["title"]`，而非貼文層級的 `title`（該欄位只存在於輪播貼文）。原邏輯
+  只讀貼文層級 `title`，導致 9 筆候選中有 4 筆單張照片貼文被誤判為空文案而跳過。已加上
+  `post.get("title") or media[0].get("title", "")` fallback 修正。
+- `scripts/build_new_shops.py` `run_llm_extraction()`：`social_links` 預設輸出第一筆 label
+  改為 `"我的 IG"`（原為 `null`），配合使用者長期慣例，往後人工補連結時只需填 `url`。
+
+### 驗證
+- 修正後重跑：候選數由 5 筆增至 9 筆，新增 4 筆（麵魚、拉麵天外天、達摩拉麵、博多一幸舍）
+  人工確認皆為真實拉麵食記。9 筆全數通過 Gemini 拉麵食記判定與 Places API 驗證（取得
+  `place_id`／座標／地址／真實照片，無歇業店家）。使用者人工補上 IG 真實短碼連結後，執行
+  `append_new_shops.py` 合併進 `ramen_data.json`（171 → 180 筆，已自動備份）。全套 95 個測試
+  通過（review/review_20260628_0143.md，PASSED）。
+

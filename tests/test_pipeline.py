@@ -151,6 +151,27 @@ class TestDispatchGetSpecificInfo:
         assert result["ui_tag"] == "TEXT"
         router.info_skill.get_shop_info.assert_called_once()
 
+    def test_summarize_failure_falls_back_to_style(self, router, monkeypatch):
+        """summarize_description 失敗（回傳空字串）時，應改用 style 作為簡短介紹文字。"""
+        shop_with_desc = {**_SAMPLE_SHOP, "description": "很長的原始 IG 食記內容…"}
+        router.client.models.generate_content.return_value = _make_gemini_response({
+            "intent": "GET_SPECIFIC_INFO",
+            "location": None,
+            "style": None,
+            "shop_name": "流水線拉麵",
+            "query": None,
+            "ui_tag": "TEXT",
+        })
+        router.info_skill.get_shop_info.return_value = shop_with_desc
+        monkeypatch.setattr(
+            "core.agent_router.summarize_description",
+            lambda shop, client, model: "",
+        )
+
+        result = router.dispatch("介紹一下流水線拉麵")
+
+        assert result["recommendations"] == [shop_with_desc["style"]]
+
     def test_shop_not_found_returns_empty_data(self, router):
         router.client.models.generate_content.return_value = _make_gemini_response({
             "intent": "GET_SPECIFIC_INFO",

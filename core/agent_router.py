@@ -196,11 +196,11 @@ class AgentRouter:
                     desc = results[0].get("description") or ""
                     if desc:
                         # 將店家資料（含 style/features/description）摘要為較長的介紹文字
-                        recommendations = [
-                            summarize_description(
-                                results[0], self.client, self.model_name
-                            )
-                        ]
+                        # 摘要失敗時改用 style 作為簡短介紹，避免整段原始 description 直接顯示
+                        summary = summarize_description(
+                            results[0], self.client, self.model_name
+                        )
+                        recommendations = [summary or results[0].get("style") or ""]
                     else:
                         # 無預存描述（店家未收錄於知識庫），即時呼叫 Gemini 生成推薦文
                         recommendations = generate_recommendations(

@@ -2,37 +2,6 @@ import json
 import copy
 from urllib.parse import quote
 
-# 介紹文截斷長度與可斷句的標點符號（避免截斷在詞彙中間）
-_DESC_TRUNCATE_LEN = 80
-_SENTENCE_DELIMS = "。！？，、；"
-
-
-def _truncate_description(desc: str, max_len: int = _DESC_TRUNCATE_LEN) -> str:
-    """
-    將過長的店家描述截斷至 max_len 字元，並盡量在標點符號處斷句，
-    避免截斷後出現不完整的詞彙。
-
-    Parameters
-    ----------
-    desc : str
-        原始描述文字。
-    max_len : int
-        最大字元數，預設為 80。
-
-    Returns
-    -------
-    str
-        截斷後的文字；若有截斷則以「…」結尾。
-    """
-    if len(desc) <= max_len:
-        return desc
-
-    snippet = desc[:max_len]
-    cut = max(snippet.rfind(c) for c in _SENTENCE_DELIMS)
-    if cut > 0:
-        snippet = snippet[:cut + 1]
-    return snippet.rstrip("，、；。！？") + "…"
-
 # === 1. Flex Message 基礎模板 ===
 BASE_BUBBLE_STRUCTURE = {
     "type": "bubble",
@@ -104,7 +73,7 @@ def get_flex_bubble(shop, recommendation=None):
     style = shop.get('style') or ""
     address = shop.get('address') or '暫無地址'
     _desc = shop.get("description") or ""
-    rec_text = recommendation if recommendation else (_truncate_description(_desc) if _desc else "點擊查看地圖了解更多。")
+    rec_text = recommendation if recommendation else (_desc if _desc else "點擊查看地圖了解更多。")
     image_url = shop.get('image_url')
     if not (image_url and image_url.startswith('https://')):
         image_url = None

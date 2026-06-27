@@ -115,7 +115,7 @@
 LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略應對：
 - **非阻塞處理**：`handle_message` 收到請求後立即啟動 `threading.Thread`，主執行緒直接返回 200，AI 邏輯在背景完成後以 `push_message` 回覆（取代有 60 秒過期限制的 `reply_message`）。啟動時預熱 Firestore、Gemini、Google Maps、Gemini Client Pool，確保首次請求也能快速回應。
 - **快取優先策略 (Cache-First)**：對 API 數據實施 7 天的快取機制，減少重複請求延遲。
-- **預處理機制**：透過 `scripts/data_pipeline.py` 離線完成 IG 數據採集與座標化，確保查詢時不需即時等待；若有店家因人工新增或 Pipeline 中斷而缺少座標，可額外執行 `data/geocode_shops.py` 補齊，不影響已有座標的店家。
+- **預處理機制**：透過 `scripts/build_new_shops.py` 離線完成 IG 數據採集與座標化，確保查詢時不需即時等待；若有店家因人工新增或 Pipeline 中斷而缺少座標，可額外執行 `data/geocode_shops.py` 補齊，不影響已有座標的店家。
 
 ### 成本控管與效能限制 (Cost Guardrail)
 - **Field Masking**：呼叫 Google Places API 時，僅請求必要欄位，有效降低 API 消耗支出。
@@ -141,7 +141,7 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
   - `usage_tracker.py`：提供 `check_and_increment(key)` 與 `record_tokens(tokens)` 兩支函式。
 
 ### 數據一致性校驗 (Data Integrity)
-- **Pipeline 驗證**：`data_pipeline.py` Stage 3 呼叫 Places API (New) 驗證店家是否仍在營業，過濾 `CLOSED_PERMANENTLY` 店家。
+- **Pipeline 驗證**：`build_new_shops.py` 呼叫 `services/google_maps.py` 的 `verify_shop_status()`（Places API New）驗證店家是否仍在營業，過濾 `CLOSED_PERMANENTLY` 店家。
 - **型別安全渲染**：`flex_handler.py` 嚴格執行索引配對，確保推薦文案與店家位置精確對齊，禁止生成空盒子 UI。
 
 ### 本地 / 生產雙路徑設計（DATA_BACKEND）
@@ -203,14 +203,12 @@ Ramen-Bot/
 │   ├── google_maps.py          # Google Maps API 統一封裝
 │   └── firestore_client.py     # Firestore Client Singleton（全域共用連線）
 ├── scripts/
-│   ├── data_pipeline.py                  # 資料清洗 Pipeline（IG → LLM → Maps → JSON）
-│   ├── ig_scraper.py                     # Instagram 公開帳號資料爬取腳本
+│   ├── build_new_shops.py                # 資料清洗 Pipeline（data/resource/ IG 匯出包 → LLM → Maps → 候選 JSON）
 │   ├── update_api_data.py                # 批次補全店家 place_id（支援 --dry-run）
-│   ├── address_consistency_check.py      # IG vs Google 地址字元相似度校驗（50% 閾值）
 │   ├── migrate_to_firestore.py           # 店家資料匯入/同步 Firestore（import / sync 模式）
 │   ├── migrate_knowledge_to_firestore.py # 知識庫向量索引寫入 Firestore（支援 --force）
 │   ├── setup_secrets.ps1                 # 從 .env 一鍵上傳金鑰至 Secret Manager
-│   └── append_new_shops.py               # 將新抓取的店家資料附加至 ramen_data.json（不比對重複）
+│   └── append_new_shops.py               # 將 build_new_shops.py 產出的候選清單附加至 ramen_data.json（不比對重複）
 ├── tests/
 │   ├── test_search_skill.py    # Haversine 距離計算、店家摘要建構
 │   ├── test_flex_handler.py    # Bubble 生成、Carousel 組裝

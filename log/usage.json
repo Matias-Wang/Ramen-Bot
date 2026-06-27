@@ -1,12 +1,12 @@
 {
-  "date": "2026-06-19",
+  "date": "2026-06-27",
   "google_maps_api": {
-    "count": 0,
+    "count": 27,
     "limit": 100
   },
   "llm_gemini": {
-    "count": 2,
-    "token_consumed": 0,
+    "count": 3,
+    "token_consumed": 20205,
     "limit": 100
   },
   "line_api": {

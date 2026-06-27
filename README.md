@@ -58,8 +58,8 @@
 ## 自動化 / AI / 資料處理能力
 - **AI 解析與生成**：Gemini（Google AI）處理意圖識別與推薦文生成
 - **RAG 知識庫**：ChromaDB 本地向量索引 + Google Embedding API，支援拉麵流派、禮儀等百科問答
-- **資料 Pipeline**：`scripts/data_pipeline.py` 自動化從 IG 爬蟲 → LLM 提取 → Maps 驗證 → JSON 輸出
-- **資料校驗**：`scripts/address_consistency_check.py` 比對地址一致性，`scripts/update_api_data.py` 批次補全 API 資料
+- **資料 Pipeline**：`scripts/build_new_shops.py` 自動化從 IG 官方匯出包（`data/resource/`）→ LLM 提取 → Maps 驗證 → 候選 JSON 輸出，再以 `scripts/append_new_shops.py` 合併進主資料庫
+- **資料校驗**：`scripts/update_api_data.py` 批次補全 API 資料（place_id、評分、照片）
 - **資料儲存**：本地 JSON 檔案作為主資料庫，支援 TTL 快取回寫
 
 ---
@@ -164,7 +164,7 @@ python app.py
 ```
 
 ### 需要準備的資料
-- `data/ramen_data.json`：本地拉麵店資料（可透過 data_pipeline.py 生成）
+- `data/ramen_data.json`：本地拉麵店資料（可透過 `build_new_shops.py` + `append_new_shops.py` 生成）
 - LINE Channel Token + Secret
 - Gemini API Key
 - Google Maps API Key

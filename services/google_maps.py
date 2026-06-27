@@ -163,6 +163,77 @@ class GoogleMapsService:
 
         return None
 
+    def verify_shop_status(self, name: str, location: str = "") -> Optional[Dict[str, Any]]:
+        """
+        Places API (New) Text Search：驗證店家營業狀態並取得座標與 place_id。
+
+        用於離線資料處理腳本（例如建立新店家候選清單），
+        過濾已永久歇業（CLOSED_PERMANENTLY）的店家。
+        Field Masking 僅請求 places.id, places.businessStatus,
+        places.location, places.formattedAddress。
+
+        Parameters
+        ----------
+        name : str
+            店名。
+        location : str, optional
+            搜尋的地區範圍，預設為空字串。
+
+        Returns
+        -------
+        Optional[Dict[str, Any]]
+            包含 place_id、business_status、coordinates、address 的字典，
+            若找不到則回傳 None。
+        """
+        if not self.api_key:
+            return None
+
+        if not check_and_increment("google_maps_api"):
+            return None
+
+        query = f"{location} {name} 拉麵".strip() if location else f"{name} 拉麵"
+        print(f"{GREEN}STEP: 正在驗證店家狀態 - {query}{RESET}")
+
+        try:
+            url = f"{PLACES_NEW_BASE_URL}/places:searchText"
+            headers = {
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": self.api_key,
+                "X-Goog-FieldMask": (
+                    "places.id,"
+                    "places.businessStatus,"
+                    "places.location,"
+                    "places.formattedAddress"
+                ),
+            }
+            body = {
+                "textQuery": query,
+                "languageCode": "zh-TW",
+                "maxResultCount": 1,
+            }
+            response = requests.post(url, json=body, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            places = data.get("places", [])
+            if not places:
+                return None
+
+            place = places[0]
+            loc = place.get("location", {})
+            return {
+                "place_id": place.get("id"),
+                "business_status": place.get("businessStatus", "OPERATIONAL"),
+                "coordinates": {
+                    "lat": loc.get("latitude"),
+                    "lng": loc.get("longitude"),
+                },
+                "address": place.get("formattedAddress"),
+            }
+        except Exception as e:
+            print(f"{RED}STEP ERROR: 驗證 {name} 失敗: {e}{RESET}")
+            return None
+
     def get_photo_by_place_id(self, place_id: str, max_height_px: int = 800) -> Optional[str]:
         """
         Places API (New) Place Details：直接用 place_id 取得照片 CDN URL。
