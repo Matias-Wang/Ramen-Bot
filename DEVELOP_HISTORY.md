@@ -298,7 +298,24 @@
 ### 驗證
 - `python -m pytest -q`：95 個測試全數通過。
 - 確認程式碼中已無其他位置使用 `italic` 樣式（review/review_20260628_1621.md，PASSED）。
-- 待人工確認：以真實 Gemini API 確認 `INFO_SUMMARY_PROMPT` 輸出是否穩定收斂在 150 字內，
-  且 Bullet Points 格式於 LINE Flex Message 純文字 `text` 元件（不支援 Markdown 清單
-  語法）中呈現是否符合預期。
+
+## 2026-06-28 — 修正介紹文偶發超過 150 字與 Markdown 粗體殘留
+
+### 修正
+- 使用者手動於 `INFO_SUMMARY_PROMPT` 加入「列點最多四點」限制後，要求以真實 API 實測驗證。
+  對 3 間 `description` 長度差異大的店家測試後發現兩個問題：
+  1. 描述越長時，模型雖守住四點上限，但每點塞入更多內容，導致總字數超過 150 字
+     （「隣 Tonari" 一例達 222 字）。
+  2. 模型偶發輸出 `**粗體**` 等 Markdown 強調符號，但 LINE Flex Message 的 `text` 元件
+     不支援 Markdown，會直接顯示星號字元。
+- `core/prompts.py`：`INFO_SUMMARY_PROMPT` 修正兩處：(1) 輸出規則明確列出禁止的具體
+  Markdown 符號（` ``` `、`**粗體**`、`*斜體*`、`#` 標題），不再只是泛稱「不要 Markdown」；
+  (2) 「150 字以內」改為「所有列點加總的硬性上限」，並要求超過時優先縮短文字或減少
+  列點數量，而非固守四點。
+
+### 驗證
+- 以真實 Gemini API（`gemini-2.5-flash`，`thinking_budget=0`）重新測試同 3 間店家：
+  豚人本店 96 字、鬼金棒中山店 109 字（首次呼叫遇 Gemini 503 高負載暫時性錯誤，重試後成功）、
+  隣 Tonari 由修正前的 222 字降至 124 字，3 筆皆在 150 字內且無 Markdown 符號殘留。
+- `python -m pytest -q`：95 個測試全數通過（review/review_20260628_1808.md，PASSED）。
 
