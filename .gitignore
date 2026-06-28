@@ -6,7 +6,7 @@ __pycache__/
 
 # Agent 相關文件
 CLAUDE.md
-AGNETS.md
+AGENTS.md
 .claude
 .agents
 
