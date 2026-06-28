@@ -281,3 +281,24 @@
   情境，人工檢視介紹文皆為完整、自然收尾的句子，無截斷現象
   （review/review_20260628_1156.md，PASSED）。
 
+## 2026-06-28 — 介紹文改為列點格式並縮短字數限制；Flex 描述文字樣式調整
+
+### 修正
+- 使用者回報：上次調整後的 `info_skill` 介紹文（150~200 字）仍嫌太長，要求改為精簡列點式
+  內容；並要求所有 Skill 輸出的描述細節文字（Flex Message 推薦文案/介紹文）改為正體
+  （非斜體）、字級縮小、顏色改為深灰色，以提升行動裝置可讀性。
+- `core/prompts.py`：`INFO_SUMMARY_PROMPT` 移除固定「150~200 字」目標，改為新增「輸出
+  字數與格式限制」區塊：禁止輸出大段落連續文字、強烈建議以 Bullet Points 呈現精簡子句、
+  總長控制在 150 字以內。
+- `core/flex_handler.py`：`BASE_BUBBLE_STRUCTURE` 推薦文案文字節點移除 `style: italic`
+  （改為正體），顏色由 `#666666` 改為深灰色 `#333333`，字級維持 `sm`。此節點為
+  `get_flex_bubble()` 共用結構，Search Skill 輪播與 Info Skill 單一 Bubble 的描述文字
+  皆同步套用新樣式。
+
+### 驗證
+- `python -m pytest -q`：95 個測試全數通過。
+- 確認程式碼中已無其他位置使用 `italic` 樣式（review/review_20260628_1621.md，PASSED）。
+- 待人工確認：以真實 Gemini API 確認 `INFO_SUMMARY_PROMPT` 輸出是否穩定收斂在 150 字內，
+  且 Bullet Points 格式於 LINE Flex Message 純文字 `text` 元件（不支援 Markdown 清單
+  語法）中呈現是否符合預期。
+

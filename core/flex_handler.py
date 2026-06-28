@@ -25,9 +25,8 @@ BASE_BUBBLE_STRUCTURE = {
                 "type": "text",
                 "text": "推薦文案",
                 "size": "sm",
-                "color": "#666666",
+                "color": "#333333",
                 "wrap": True,
-                "style": "italic",
                 "margin": "md"
             }
         ]
