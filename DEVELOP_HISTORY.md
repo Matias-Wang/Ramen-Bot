@@ -319,3 +319,35 @@
   隣 Tonari 由修正前的 222 字降至 124 字，3 筆皆在 150 字內且無 Markdown 符號殘留。
 - `python -m pytest -q`：95 個測試全數通過（review/review_20260628_1808.md，PASSED）。
 
+## 2026-06-28 — Webhook 事件特徵擴充 Phase 1：訊息去重、時間感知、群組分流
+
+### 新增
+- `core/message_dedup.py`：新增 `is_duplicate_message(message_id)`，本地模式以記憶體 `set`
+  記錄已處理過的 LINE `message.id`，生產模式寫入 Firestore `processed_message_ids`
+  collection（雙路徑判斷沿用既有 `DATA_BACKEND` 慣例）。`app.py` 的 `handle_message`
+  在啟動背景執行緒前先檢查，重複請求（LINE webhook 因網路延遲重送）直接跳過，避免
+  Gemini 被重複觸發計費。
+- `core/agent_router.py`：`dispatch()` / `_dispatch_inner()` 新增 `current_time` 參數，
+  有提供時會以 `[目前時間：...]` 前綴注入 STEP 1 意圖解析的 `contents`，供 Gemini 判斷
+  「現在」、「今天」等相對時間用語。`app.py` 的 `handle_message` 將 `event.timestamp`
+  （毫秒時戳）轉換為台北時間字串後傳入。
+- `app.py`：`handle_message` 最前面新增來源過濾，非一對一私聊（`event.source.type != "user"`，
+  即群組/多人聊天室）直接 return、不呼叫 Gemini。範圍經使用者確認：目前不需要 @ 標記偵測，
+  群組訊息一律忽略。
+
+### 已知限制
+- 時間感知目前僅注入意圖解析步驟；`ramen_data.json` 尚無營業時間欄位，「現在有開的店」
+  類查詢仍無法實作，需後續另外補資料工程。
+
+### 驗證
+- 新增 `tests/test_message_dedup.py`（3 個測試：首次出現、重複偵測、不同 id 互不影響），
+  全套測試由 95 個增至 98 個，全數通過。
+- 以真實 Gemini API 呼叫 `dispatch(user_text, current_time=...)`，確認注入時間背景後
+  仍能正確解析意圖 JSON（`SEARCH_BY_CRITERIA` / `CAROUSEL`），未破壞既有輸出格式。
+- 執行 `gcloud firestore fields ttls update received_at --collection-group=processed_message_ids
+  --database=ramendata --enable-ttl --expiration-offset=86400s` 設定 Firestore TTL policy
+  （24 小時後自動清除），避免 `processed_message_ids` collection 無限累積。首次執行時
+  單獨帶 `--enable-ttl` 報錯（`Exactly one of (--disable-ttl | [--enable-ttl :
+  --expiration-offset]) must be specified`），需與 `--expiration-offset` 一起指定，
+  重跑後確認 `state: ACTIVE`。
+

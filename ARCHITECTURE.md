@@ -117,6 +117,14 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
 - **快取優先策略 (Cache-First)**：對 API 數據實施 7 天的快取機制，減少重複請求延遲。
 - **預處理機制**：透過 `scripts/build_new_shops.py` 離線完成 IG 數據採集與座標化，確保查詢時不需即時等待；若有店家因人工新增或 Pipeline 中斷而缺少座標，可額外執行 `data/geocode_shops.py` 補齊，不影響已有座標的店家。
 
+### Webhook 事件特徵擴充（v1 已完成）
+> 對應 `line_response_usage.md` 第一階段（內容已併入本文件後刪除原檔）；第二、三階段（多模態事件、SLM 微調）列為後續優化項目，詳見 `PENDING.md`。
+
+- **訊息去重 (`event.message.id`)**：`core/message_dedup.py` 的 `is_duplicate_message()` 在 `handle_message` 啟動背景執行緒前檢查，重複請求直接跳過（仍回 200），避免 LINE webhook 重送導致 Gemini 被重複觸發計費。本地：記憶體 `set`；生產：Firestore `processed_message_ids` collection（雙路徑判斷邏輯同 `DATA_BACKEND`）。
+- **時間感知 (`event.timestamp`)**：`handle_message` 將毫秒時戳轉換為台北時間字串，透過 `AgentRouter.dispatch(user_text, current_time=...)` 注入 STEP 1 意圖解析的 `contents`，供 Gemini 解析「今天」、「最近」等相對時間用語。
+  - 注：目前 `ramen_data.json` 尚無營業時間欄位，「現在有開的店」類查詢仍需額外資料工程才能實作，此處僅先注入時間感知本身。
+- **來源環境分流 (`event.source.type`)**：`handle_message` 最前面判斷，非一對一私聊（`source.type != "user"`，即群組/多人聊天室）直接忽略、不呼叫 Gemini。範圍經使用者確認：目前不需要 @ 標記偵測。
+
 ### 成本控管與效能限制 (Cost Guardrail)
 - **Field Masking**：呼叫 Google Places API 時，僅請求必要欄位，有效降低 API 消耗支出。
 - **圖片優化**：設定 `maxHeightPx` 為 800px，符合 LINE Flex Message 比例規範。

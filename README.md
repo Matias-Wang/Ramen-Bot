@@ -52,6 +52,7 @@
 - ✅ 使用者錯誤回報（REPORT_ERROR intent → 收集至 `log/feedback_reports.json` / Firestore，啟動時自動列出待處理項目）
 - ✅ 全局 Fallback 機制（任一 Skill 失敗均能優雅降級）
 - ✅ 非阻塞 Webhook 處理（背景 Thread，防止 LINE 1 秒逾時）
+- ✅ Webhook 訊息去重（`message.id`）、時間感知（`timestamp`）、群組/私聊分流（僅處理一對一私聊）
 
 ---
 

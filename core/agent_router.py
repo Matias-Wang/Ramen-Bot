@@ -107,7 +107,7 @@ class AgentRouter:
             "message": message,
         }
 
-    def dispatch(self, user_text: str) -> dict:
+    def dispatch(self, user_text: str, current_time: str | None = None) -> dict:
         """
         解析使用者輸入的意圖，並分發至對應技能執行。
 
@@ -115,6 +115,9 @@ class AgentRouter:
         ----------
         user_text : str
             使用者原始輸入文字。
+        current_time : str or None
+            台北時間字串（例如 "2026-06-28 14:30"），作為背景資訊提供給 Gemini
+            判斷「現在」、「今天」等相對時間用語；若為 None 則不注入時間背景。
 
         Returns
         -------
@@ -123,12 +126,12 @@ class AgentRouter:
             若所有步驟均失敗則回傳 FALLBACK intent。
         """
         try:
-            return self._dispatch_inner(user_text)
+            return self._dispatch_inner(user_text, current_time)
         except Exception as e:
             print(f"{RED}DISPATCH CRITICAL ERROR: {e}{RESET}")
             return self._fallback_result()
 
-    def _dispatch_inner(self, user_text: str) -> dict:
+    def _dispatch_inner(self, user_text: str, current_time: str | None = None) -> dict:
         """dispatch 的核心邏輯，由頂層 try/except 包覆。"""
         _t0 = time.time()
 
@@ -137,9 +140,12 @@ class AgentRouter:
         try:
             if not check_and_increment("llm_gemini"):
                 raise Exception("LLM 每日使用上限已達")
+            contents = (
+                f"[目前時間：{current_time}]\n{user_text}" if current_time else user_text
+            )
             model_result = self.client.models.generate_content(
                 model=self.model_name,
-                contents=user_text,
+                contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=IDENTIFY_INSTRUCTION_PROMPT,
                 ),

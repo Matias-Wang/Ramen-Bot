@@ -17,8 +17,10 @@ from dotenv import load_dotenv
 # === 外部模組匯入 ===
 from core.agent_router import AgentRouter
 from core.flex_handler import assemble_carousel, get_flex_bubble
+from core.message_dedup import is_duplicate_message
 from core.usage_tracker import check_and_increment
 from skills.feedback_skill import collect_report, check_pending_reports
+from datetime import datetime, timezone, timedelta
 
 # === 自定義變數 ===
 RED = '\033[91m'
@@ -116,7 +118,7 @@ def callback() -> str:
     return 'OK'
 
 
-def _reply_to_line(user_text: str, user_id: str) -> None:
+def _reply_to_line(user_text: str, user_id: str, current_time: str) -> None:
     """
     在背景執行緒中處理訊息並以 push_message 回覆 LINE。
     改用 push_message 取代 reply_message，根治 reply token 60 秒過期導致的延遲問題。
@@ -127,11 +129,13 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
         使用者原始輸入文字。
     user_id : str
         LINE 使用者 ID，用於 push_message。
+    current_time : str
+        台北時間字串，傳入 AgentRouter 供 Gemini 判斷相對時間用語。
     """
     _t_start = time.time()
     print(f"{CYAN}[TIMER] 開始處理訊息: {user_text!r}{RESET}")
     try:
-        result = router.dispatch(user_text)
+        result = router.dispatch(user_text, current_time=current_time)
         print(f"{CYAN}[TIMER] dispatch 完成，耗時 {time.time() - _t_start:.1f}s{RESET}")
 
         intent = result.get('intent')
@@ -228,17 +232,33 @@ def _reply_to_line(user_text: str, user_id: str) -> None:
             print(f"{RED}ERROR: push_message 失敗（確認使用者是否加好友）: {reply_err}{RESET}")
 
 
+TAIPEI_TZ = timezone(timedelta(hours=8))
+
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event: MessageEvent) -> None:
     """
     LINE 訊息事件入口。立即返回（非阻塞），由背景執行緒處理 AI 邏輯與回覆。
     改用 user_id 傳遞至 _reply_to_line，使用 push_message 取代 reply_message。
+
+    僅處理一對一私聊（source.type == "user"），群組/多人聊天室訊息直接忽略；
+    並以 message.id 去重，避免 LINE webhook 重送觸發重複的 Gemini 呼叫。
     """
+    if event.source.type != "user":
+        print(f"{YELLOW}STEP: 來源非一對一私聊（{event.source.type}），忽略此訊息{RESET}")
+        return
+
+    if is_duplicate_message(event.message.id):
+        return
+
     user_text = event.message.text
     user_id = event.source.user_id
+    current_time = datetime.fromtimestamp(
+        event.timestamp / 1000, tz=TAIPEI_TZ
+    ).strftime("%Y-%m-%d %H:%M")
     thread = threading.Thread(
         target=_reply_to_line,
-        args=(user_text, user_id),
+        args=(user_text, user_id, current_time),
         daemon=True,
     )
     thread.start()
