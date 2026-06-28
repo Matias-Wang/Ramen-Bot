@@ -156,7 +156,11 @@ class AgentRouter:
             print(f"[DEBUG] AI 解析意圖: {intent_data}")
         except Exception as e:
             print(f"{RED}STEP 1 ERROR:{e}{RESET}")
-            intent_data = {"intent": "SEARCH_BY_CRITERIA", "ui_tag": "TEXT"}
+            # 意圖解析失敗時直接回傳 FALLBACK，不可假裝成「無條件搜尋」繼續往下執行：
+            # SEARCH_BY_CRITERIA 在 location/style 皆為空時會比對「全部」店家
+            # （filter_ramen_data 視為無篩選條件），可能推薦出與使用者所在地無關的店家
+            # （例如資料庫中其他城市的記錄）。
+            return self._fallback_result("系統忙碌中，請稍後再試。")
         print(f"{CYAN}[TIMER] STEP 1 完成，耗時 {time.time() - _t0:.1f}s{RESET}")
 
         intent = intent_data.get('intent', 'SEARCH_BY_CRITERIA').upper()

@@ -258,21 +258,27 @@ class TestDispatchReportError:
 # ─── 頂層例外 Fallback ─────────────────────────────────────────────────────────
 
 class TestDispatchFallback:
-    """Gemini 回傳非 JSON 時，STEP 1 例外處理應 fallback 為 SEARCH_BY_CRITERIA。"""
+    """STEP 1（意圖解析）發生例外時，應直接回傳 FALLBACK，不可假裝成合法的
+    無條件 SEARCH_BY_CRITERIA 繼續往下執行（會比對到與使用者所在地無關的店家）。"""
 
-    def test_invalid_gemini_json_falls_back_to_search(self, router, monkeypatch):
+    def test_invalid_gemini_json_returns_fallback(self, router):
         resp = MagicMock()
         resp.text = "這不是 JSON"
         resp.usage_metadata = None
         router.client.models.generate_content.return_value = resp
-        monkeypatch.setattr(
-            "core.agent_router.filter_ramen_data", lambda _: []
-        )
-        monkeypatch.setattr(
-            "core.agent_router.generate_recommendations",
-            lambda shops, client, model, num_shops: [],
-        )
 
         result = router.dispatch("??")
 
-        assert result["intent"] == "SEARCH_BY_CRITERIA"
+        assert result["intent"] == "FALLBACK"
+        assert result["data"] == []
+        assert result["recommendations"] == []
+
+    def test_gemini_api_error_returns_fallback(self, router):
+        router.client.models.generate_content.side_effect = Exception(
+            "503 UNAVAILABLE"
+        )
+
+        result = router.dispatch("現在這個時間有適合吃的拉麵嗎")
+
+        assert result["intent"] == "FALLBACK"
+        assert result["data"] == []

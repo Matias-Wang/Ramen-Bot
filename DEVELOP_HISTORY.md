@@ -351,3 +351,23 @@
   --expiration-offset]) must be specified`），需與 `--expiration-offset` 一起指定，
   重跑後確認 `state: ACTIVE`。
 
+## 2026-06-29 — 修正意圖解析失敗時錯誤 fallback 成無條件搜尋的問題
+
+### 修正
+- 使用者在正式環境實測「現在這個時間有適合吃的拉麵嗎」時，意圖推薦出與台北完全無關的
+  大阪店家。追查 Cloud Run log 發現根因：該次 Gemini 呼叫剛好遇到 503（暫時性高負載
+  錯誤），`core/agent_router.py` 的 `_dispatch_inner()` 在 STEP 1 例外時原本會 fallback
+  成 `{"intent": "SEARCH_BY_CRITERIA", "ui_tag": "TEXT"}`（無 `location`/`style`），而
+  `skills/Search_skill.py` 的 `filter_ramen_data()` 將「無地區條件」視為「符合全部
+  店家」，導致從全部 180 間店（含使用者個人去大阪旅遊時記錄的 NEXT SHIKAKU）隨機抽選，
+  使用者完全無法察覺背後其實是 API 暫時失敗。與本次 Webhook 時間感知功能本身無關，是
+  巧合在測試時撞上既有的容錯邏輯缺口。
+- `core/agent_router.py`：STEP 1 的例外處理改為直接回傳 `self._fallback_result("系統忙碌中，
+  請稍後再試。")`，不再偽裝成合法的無條件搜尋繼續往下執行 STEP 2/3。
+
+### 驗證
+- 更新 `tests/test_pipeline.py` 的 `TestDispatchFallback`：原測試斷言「Gemini 回傳非 JSON
+  時 fallback 為 SEARCH_BY_CRITERIA」已改為斷言回傳 `FALLBACK`；新增
+  `test_gemini_api_error_returns_fallback`，模擬 `generate_content` 直接拋出例外
+  （對應真實的 503 情境，非僅 JSON 格式錯誤）。全套測試由 98 增至 99 個，全數通過。
+
