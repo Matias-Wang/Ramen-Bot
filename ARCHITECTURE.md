@@ -49,7 +49,7 @@
       |       - SEARCH_BY_CRITERIA：generate_recommendations() — ThreadPoolExecutor +
       |         預熱 Client Pool 並行生成 3 筆推薦文（30-60 字）
       |       - GET_SPECIFIC_INFO：有 description 時呼叫 summarize_description()，
-      |         以 INFO_SUMMARY_PROMPT 摘要為 100~150 字介紹文；無 description 時
+      |         以 INFO_SUMMARY_PROMPT 摘要為 150~200 字介紹文；無 description 時
       |         回退至 generate_recommendations() 生成 1 筆推薦文（30-60 字）
       |
 [STEP 4] flex_handler UI 組裝
@@ -85,7 +85,7 @@
     2. 若需更新 → Text Search 取得 `place_id`、評分、評論數、照片
     3. 更新後回寫本地 JSON（或 Firestore document）
 - **Field Masking**：`id, displayName, rating, userRatingCount, formattedAddress, photos`
-- **介紹文生成**：有 `description`（IG 食記）時，以 `INFO_SUMMARY_PROMPT` 呼叫 Gemini 摘要為 100~150 字介紹文（`summarize_description()`）；無 `description` 時回退至 `RECOMMEND_PROMPT` 生成 30-60 字推薦文（同 Search Skill 的 `generate_recommendations`）
+- **介紹文生成**：有 `description`（IG 食記）時，以 `INFO_SUMMARY_PROMPT` 呼叫 Gemini 摘要為 150~200 字介紹文（`summarize_description()`）；無 `description` 時回退至 `RECOMMEND_PROMPT` 生成 30-60 字推薦文（同 Search Skill 的 `generate_recommendations`）。兩個函式皆已關閉 `gemini-2.5-flash` 預設的 thinking（`thinking_config=ThinkingConfig(thinking_budget=0)`），避免思考鏈消耗 `max_output_tokens` 預算導致輸出被硬切斷
 - **輸出格式**：FlexSendMessage 單一 Bubble，含 Map 按鈕 + social_links 按鈕（邏輯與 Search Skill Carousel 相同，使用 `get_flex_bubble()`）
 
 ### Feedback Skill (錯誤回報佇列) — `skills/feedback_skill.py`

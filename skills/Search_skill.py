@@ -372,10 +372,17 @@ def _get_recommendation_threaded(
         if not check_and_increment("llm_gemini"):
             return default
         prompt = RECOMMEND_PROMPT.format(shop_summary=shop_summary)
+        # gemini-2.5-flash 預設會先消耗 thinking tokens（實測單次最多 380+），
+        # 常吃光 max_output_tokens 預算導致可見文字被硬切斷在句子中間；
+        # 這類短文案不需要推理，故關閉 thinking。
         result = client.models.generate_content(
             model=model_name,
             contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.6, max_output_tokens=400),
+            config=types.GenerateContentConfig(
+                temperature=0.6,
+                max_output_tokens=400,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
         )
         if result.usage_metadata:
             record_tokens(result.usage_metadata.total_token_count or 0)
@@ -463,10 +470,16 @@ def summarize_description(shop: Dict[str, Any], client: Any, model_name: str) ->
             return default
         shop_summary = build_shop_summary(shop)
         prompt = INFO_SUMMARY_PROMPT.format(shop_summary=shop_summary)
+        # 同 _get_recommendation_threaded：關閉 thinking，避免 thinking tokens
+        # 吃光 max_output_tokens 預算導致介紹文被硬切斷。
         result = client.models.generate_content(
             model=model_name,
             contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.6, max_output_tokens=600),
+            config=types.GenerateContentConfig(
+                temperature=0.6,
+                max_output_tokens=600,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
         )
         if result.usage_metadata:
             record_tokens(result.usage_metadata.total_token_count or 0)

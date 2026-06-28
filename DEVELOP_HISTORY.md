@@ -251,3 +251,33 @@
   `append_new_shops.py` 合併進 `ramen_data.json`（171 → 180 筆，已自動備份）。全套 95 個測試
   通過（review/review_20260628_0143.md，PASSED）。
 
+---
+
+## 2026-06-28 — 找出並修正店家介紹文隨機被截斷的根本原因（thinking tokens）
+
+### 修正
+- 使用者回報 `search_skill` 第 2、3 筆店家、`info_skill` 的店家介紹文仍會出現「未經處理、
+  像被硬切斷」的狀況，只有 `search_skill` 第 1 筆是完整的。以真實 Gemini API
+  （`gemini-2.5-flash`）重現後找到根本原因：模型預設啟用 thinking（思考鏈），思考過程
+  消耗的 tokens 計入 `max_output_tokens` 總預算（實測單次思考鏈耗用 238～383 tokens），
+  常吃光 `_get_recommendation_threaded()`（400 tokens）與 `summarize_description()`
+  （600 tokens）的輸出預算，導致可見文字被硬切斷在句子中間
+  （`finish_reason=MAX_TOKENS`）。「哪一筆完整」純屬隨機，與第幾筆店家無關——這也解釋了
+  為何同一段程式碼第 1 筆有時完整、第 2/3 筆卻被切斷。`knowledge_skill.py` 因從未設定
+  `max_output_tokens` 上限而未受影響，間接佐證根因確實是 thinking tokens 排擠輸出預算。
+- `skills/Search_skill.py`：`_get_recommendation_threaded()` 與 `summarize_description()`
+  的 `GenerateContentConfig` 皆新增 `thinking_config=ThinkingConfig(thinking_budget=0)`
+  關閉思考鏈（短文案不需要推理）。
+- `core/prompts.py`：`INFO_SUMMARY_PROMPT` 字數上限由 100~150 字提高至 150~200 字
+  （使用者要求：有 `description` 時 info_skill 字數應高於 search_skill 的 30~60 字；
+  無 `description` 時維持既有 `generate_recommendations()` 30~60 字 fallback，
+  `agent_router.py` 分支邏輯不變）。
+
+### 驗證
+- 以真實 API 重跑 `RECOMMEND_PROMPT`／`INFO_SUMMARY_PROMPT` 各 5 次，加上
+  `thinking_budget=0` 後皆為 5/5 次 `finish_reason=STOP`，文字完整無截斷。
+- `python -m pytest -q`：95 個測試全數通過。
+- `python scripts/e2e_test.py --full`：4 個 Search 情境（共 12 筆店家）+ 2 個 Info
+  情境，人工檢視介紹文皆為完整、自然收尾的句子，無截斷現象
+  （review/review_20260628_1156.md，PASSED）。
+
