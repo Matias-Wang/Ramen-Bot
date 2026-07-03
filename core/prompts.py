@@ -14,6 +14,8 @@ IDENTIFY_INSTRUCTION_PROMPT = """
   "style": "口味關鍵字或 null",
   "shop_name": "店家名稱或 null",
   "query": "搜尋關鍵字、百科問題或錯誤描述或 null",
+  "radius_km": 數字或 null,
+  "open_now": true | false | null,
   "ui_tag": "CAROUSEL" | "TEXT" | null
 }
 
@@ -29,6 +31,8 @@ IDENTIFY_INSTRUCTION_PROMPT = """
 - style: 拉麵口味（例如 "豚骨"、"鹽味"）。**注意：除非明確提到口味關鍵字，否則必須給 null。絕對不要把「推薦」、「好吃」、「這間」等形容詞填入此欄位。**
 - shop_name: 使用者提到的具體店名。
 - query: 使用者的原始關鍵字、問題描述，或 REPORT_ERROR 時的錯誤內容說明。
+- radius_km: 使用者若明確指定搜尋範圍（例如「方圓 5 公里」、「附近 3 公里內」）才填入該數字（單位：公里）；否則必須給 null。
+- open_now: 使用者若要找「現在有開」「營業中」「現在能吃」的店家則給 true；否則給 null。
 - ui_tag: 搜尋結果建議用 "CAROUSEL"，單一店家資訊、百科或錯誤回報建議用 "TEXT"。
 
 # 規則限制：

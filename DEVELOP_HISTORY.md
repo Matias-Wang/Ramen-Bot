@@ -371,3 +371,32 @@
   `test_gemini_api_error_returns_fallback`，模擬 `generate_content` 直接拋出例外
   （對應真實的 503 情境，非僅 JSON 格式錯誤）。全套測試由 98 增至 99 個，全數通過。
 
+---
+
+## 2026-07-04 — Webhook 階段二：LocationMessage 定位推薦 + 店家營業時間
+
+### 新增
+- **LocationMessage 定位推薦**：`app.py` 新增 `@handler.add(MessageEvent, message=LocationMessage)`
+  事件處理與 `_reply_location()`，使用者直接分享 LINE 位置（GPS pin）時，繞過 Gemini 意圖解析，
+  直接對店家快取跑 Haversine 找最近 ≤3 間並生成推薦文 Carousel。沿用私聊分流與 message.id 去重。
+- `skills/Search_skill.py` `filter_by_location(lat, lng, radius_km=5.0, style)`：不經 Geocoding、
+  不隨機抽選，依距離排序取最近店家；回傳 `(results, nearest_km)`，nearest_km 供半徑內找不到時
+  回覆使用者「最近一間在 X 公里外」。
+- **店家營業時間 + 「現在有開」查詢**：`services/google_maps.py` `get_opening_hours_by_place_id()`
+  取 Places `regularOpeningHours`；`scripts/update_api_data.py` 新增 `--update-hours` 批次補全模式
+  （每店 1 次 API，179 筆分 2 天）。
+- `skills/Search_skill.py` `is_open_at(opening_hours, dt)`：依 Places `periods`（day 0=週日）判斷
+  營業狀態，正確處理跨午夜與 24 小時店。
+- `core/prompts.py` 意圖解析新增 `radius_km`（使用者指定範圍）與 `open_now`（找營業中店家）欄位。
+
+### 修改
+- `filter_ramen_data()` 新增 `current_time` 參數並接收 `radius_km` / `open_now`：`radius_km` 覆寫
+  精確點查詢的固定 2km 半徑（行政區字串比對不變）；`open_now` 為真時以 `is_open_at` 過濾，
+  無營業時間資料的店家一律排除（寧缺勿錯）。`core/agent_router.py` 把既有 `current_time` 往下傳。
+
+### 驗證
+- `pytest` 118 個測試全數通過（新增 19 個：is_open_at 7 / filter_by_location 7 / radius 2 / open_now 3）。
+- 真實資料：中山站 2km 回傳 3 間排序正確、偏遠處回傳空但正確回報 nearest_km。
+- 真實 Gemini API：新欄位正確解析，一般查詢無回歸。
+- 待後續營運：分 2 天執行 `--update-hours` 回填營業時間並 sync Firestore；LocationMessage 待 LINE 實機測試。
+

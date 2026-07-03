@@ -21,7 +21,7 @@
 [User Input via LINE]
       |
 [STEP 1] AgentRouter.dispatch() — Gemini 解析意圖
-      | intent_data: {intent, location, style, shop_name, ui_tag}
+      | intent_data: {intent, location, style, shop_name, radius_km, open_now, ui_tag}
       |
 [STEP 2] Skill 執行
       +-- SEARCH_BY_CRITERIA → filter_ramen_data() → [shop list]
@@ -73,10 +73,17 @@
          規則，Geocoding 回傳的幾何中心點常離店家聚集處 2km 以上，放大半徑
          又會等量誤抓鄰近行政區店家，無安全半徑值（見 PENDING.md 中山區案例）
        - 捷運站等精確點查詢 → Geocoding 取目標座標 → Haversine 計算距離 →
-         **2km** 以內；查無座標則同樣回退至上述字串比對
-    3. 結果依 `distance_km` 排序（若有座標），超過 3 筆則 `random.sample` 隨機抽選
+         預設 **2km** 以內；查無座標則同樣回退至上述字串比對。使用者若明確指定
+         範圍（intent 的 `radius_km`，例如「方圓 5 公里」）則覆寫此預設半徑
+    3. 「現在有開」查詢（intent 的 `open_now` 為真）：以 `is_open_at()` 依店家
+       `opening_hours.periods`（Places API 原生結構，day 0=週日）與注入的 `current_time`
+       過濾當下營業中的店家；**無營業時間資料的店家一律排除**（無法確認，寧缺勿錯）
+    4. 結果依 `distance_km` 排序（若有座標），超過 3 筆則 `random.sample` 隨機抽選
 - **推薦文生成**：`ThreadPoolExecutor` + 預熱 Client Pool 並行呼叫 Gemini，最多 3 筆
 - **輸出格式**：FlexSendMessage Carousel（最多 3 個 bubble，含 Map 按鈕 + social_links 按鈕）
+- **定位推薦（LocationMessage 專用）**：`filter_by_location(lat, lng, radius_km=5.0, style)`
+  不經 Geocoding、不隨機抽選，直接對店家快取跑 Haversine，依距離排序取最近 ≤3 間；
+  回傳 `(results, nearest_km)`，`nearest_km` 供半徑內找不到時回覆使用者最近一間的距離
 
 ### Info Skill (即時數據增強) — `skills/info_skill.py`
 - **數據源**：本地 `data/ramen_data.json` / 生產 Firestore `ramen_shops` + Google Places API (New)
@@ -124,6 +131,19 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
 - **時間感知 (`event.timestamp`)**：`handle_message` 將毫秒時戳轉換為台北時間字串，透過 `AgentRouter.dispatch(user_text, current_time=...)` 注入 STEP 1 意圖解析的 `contents`，供 Gemini 解析「今天」、「最近」等相對時間用語。
   - 注：目前 `ramen_data.json` 尚無營業時間欄位，「現在有開的店」類查詢仍需額外資料工程才能實作，此處僅先注入時間感知本身。
 - **來源環境分流 (`event.source.type`)**：`handle_message` 最前面判斷，非一對一私聊（`source.type != "user"`，即群組/多人聊天室）直接忽略、不呼叫 Gemini。範圍經使用者確認：目前不需要 @ 標記偵測。
+
+### 多事件響應：LocationMessage 定位推薦（階段二）
+使用者直接分享 LINE 位置（GPS pin）時，`app.py` 的 `@handler.add(MessageEvent, message=LocationMessage)`
+→ `handle_location` → 背景執行緒 `_reply_location(lat, lng, user_id)`：
+- **繞過 AgentRouter**：位置訊息無文字語意，不需 Gemini 意圖解析（省一次 LLM 呼叫），
+  直接呼叫 `filter_by_location()` 跑 Haversine。
+- **預設 5km 半徑**，取最近 ≤3 間 → `generate_recommendations` + `assemble_carousel` → Carousel。
+- **找不到時的透明度**：半徑內無結果則回覆文字明白告知「已在 5 公里內搜尋、最近一間約在 X 公里外」，
+  並提示可用文字指定更大範圍。
+- 沿用 `handle_message` 的私聊分流與 `message.id` 去重兩道防護。
+
+> 範圍指定/放大由**文字查詢路徑**承擔（意圖解析的 `radius_km` 覆寫 `filter_ramen_data` 的固定半徑），
+> 不在純 GPS 位置訊息引入跨訊息對話狀態（簡化設計）。
 
 ### 成本控管與效能限制 (Cost Guardrail)
 - **Field Masking**：呼叫 Google Places API 時，僅請求必要欄位，有效降低 API 消耗支出。

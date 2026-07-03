@@ -85,7 +85,8 @@ class TestDispatchSearchByCriteria:
             "ui_tag": "CAROUSEL",
         })
         monkeypatch.setattr(
-            "core.agent_router.filter_ramen_data", lambda _: [_SAMPLE_SHOP]
+            "core.agent_router.filter_ramen_data",
+            lambda intent_data, current_time=None: [_SAMPLE_SHOP],
         )
         monkeypatch.setattr(
             "core.agent_router.generate_recommendations",
@@ -110,7 +111,8 @@ class TestDispatchSearchByCriteria:
             "ui_tag": "CAROUSEL",
         })
         monkeypatch.setattr(
-            "core.agent_router.filter_ramen_data", lambda _: []
+            "core.agent_router.filter_ramen_data",
+            lambda intent_data, current_time=None: [],
         )
         monkeypatch.setattr(
             "core.agent_router.generate_recommendations",

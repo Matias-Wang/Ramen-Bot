@@ -6,6 +6,7 @@ import time
 import re
 import math
 import random
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from google import genai
 from google.genai import types
@@ -195,7 +196,145 @@ def calculate_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> fl
     return R * c
 
 
-def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+def is_open_at(opening_hours: Optional[Dict[str, Any]], dt: datetime) -> bool:
+    """
+    判斷店家在指定時間點是否營業中。
+
+    opening_hours 的 periods 採 Google Places API (New) `regularOpeningHours.periods`
+    原生結構：每筆為 `{"open": {"day": 0-6, "hour": 0-23, "minute": 0-59},
+    "close": {...}}`，其中 day 以 0=週日、1=週一 ... 6=週六 編碼（與 Places API 一致）。
+    正確處理跨午夜營業（close 落在 open 之後的隔日）。
+
+    Parameters
+    ----------
+    opening_hours : Optional[Dict[str, Any]]
+        店家營業時間資料，須含 "periods" 鍵；為 None、缺 periods 或 periods 為空時回傳 False。
+    dt : datetime
+        欲判斷的時間點（台北當地時間）。
+
+    Returns
+    -------
+    bool
+        該時間點是否落在任一營業時段內。
+    """
+    if not opening_hours:
+        return False
+    periods = opening_hours.get("periods") or []
+    if not periods:
+        return False
+
+    # Places API day 編碼：0=週日 ... 6=週六；Python weekday()：0=週一 ... 6=週日
+    now_day = (dt.weekday() + 1) % 7
+    now_minutes = dt.hour * 60 + dt.minute
+
+    for period in periods:
+        open_p = period.get("open") or {}
+        close_p = period.get("close") or {}
+        if "day" not in open_p:
+            continue
+        open_day = open_p.get("day")
+        open_min = open_p.get("hour", 0) * 60 + open_p.get("minute", 0)
+
+        # Places API 僅在「24 小時營業」時省略 close 欄位，視為全時段營業
+        if not close_p or "day" not in close_p:
+            return True
+
+        close_day = close_p.get("day")
+        close_min = close_p.get("hour", 0) * 60 + close_p.get("minute", 0)
+
+        if open_day == close_day:
+            # 當日內時段
+            if now_day == open_day and open_min <= now_minutes < close_min:
+                return True
+        else:
+            # 跨午夜時段：從 open_day 的 open_min 到 close_day 的 close_min
+            if now_day == open_day and now_minutes >= open_min:
+                return True
+            if now_day == close_day and now_minutes < close_min:
+                return True
+
+    return False
+
+
+def filter_by_location(
+    lat: float,
+    lng: float,
+    radius_km: float = 5.0,
+    style: Optional[str] = None,
+) -> tuple[List[Dict[str, Any]], Optional[float]]:
+    """
+    以使用者分享的精確座標（LINE 位置訊息）為中心，找出最近的拉麵店。
+
+    與 filter_ramen_data 不同，本函式不經過 Geocoding、不做隨機抽選，
+    直接對店家快取跑 Haversine 距離並依距離排序取最近數間，供
+    LocationMessage 事件使用。
+
+    Parameters
+    ----------
+    lat : float
+        使用者所在緯度。
+    lng : float
+        使用者所在經度。
+    radius_km : float
+        搜尋半徑（公里），預設 5km。
+    style : Optional[str]
+        口味關鍵字，None 或空字串表示不限口味。
+
+    Returns
+    -------
+    tuple[List[Dict[str, Any]], Optional[float]]
+        (最近 ≤3 間符合半徑的店家, 全資料集最近一間的距離)。
+        第二個值僅在無結果時供回覆訊息說明「最近一間有多遠」，
+        無任何可比對店家時為 None。
+    """
+    print(f"{GREEN}STEP: 開始執行定位推薦（({lat}, {lng}) 半徑 {radius_km}km）{RESET}")
+
+    all_shops = _load_all_shops()
+    if not all_shops:
+        return [], None
+
+    target_style = style or ""
+    within_radius: List[Dict[str, Any]] = []
+    nearest_km: Optional[float] = None
+
+    for _shop in all_shops:
+        # 已標記暫停營業的店家不應推薦給使用者
+        if "暫停營業" in (_shop.get("name") or ""):
+            continue
+
+        shop_coords = _shop.get("coordinates")
+        has_coords = (
+            shop_coords
+            and shop_coords.get("lat") is not None
+            and shop_coords.get("lng") is not None
+        )
+        if not has_coords:
+            continue
+
+        # 口味比對（模糊）
+        shop_style = _shop.get("style") or ""
+        if target_style and target_style not in shop_style:
+            continue
+
+        dist = calculate_distance(lat, lng, shop_coords["lat"], shop_coords["lng"])
+        if nearest_km is None or dist < nearest_km:
+            nearest_km = round(dist, 2)
+
+        if dist <= radius_km:
+            shop = copy.copy(_shop)  # 防止寫入 distance_km 汙染快取原始 dict
+            shop["distance_km"] = round(dist, 2)
+            within_radius.append(shop)
+
+    within_radius.sort(key=lambda x: x.get("distance_km", 999))
+    results = within_radius[:3]
+
+    print(f"{GREEN}STEP: 定位推薦完成，半徑內 {len(within_radius)} 間，回傳 {len(results)} 間{RESET}")
+    return results, nearest_km
+
+
+def filter_ramen_data(
+    intent_data: Dict[str, Any], current_time: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """
     核心篩選邏輯：根據 AI 解析出的意圖，從本地 JSON 篩選店家。
     包含地理位置經緯度比對邏輯。
@@ -204,6 +343,9 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     ----------
     intent_data : Dict[str, Any]
         由 Agent Router 解析出的意圖資料。
+    current_time : Optional[str]
+        台北時間字串（格式 "%Y-%m-%d %H:%M"）。當 intent_data 的 open_now 為真時，
+        用於過濾「當下正在營業」的店家；None 則不做營業時間過濾。
 
     Returns
     -------
@@ -223,7 +365,18 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     if target_style in ["推薦", "好吃", "熱門"]:
         target_style = ""
 
-    print(f"{CYAN}[DEBUG] 原始條件 - 地區: '{target_location}', 口味: '{target_style}'{RESET}")
+    # 「現在有開」查詢：解析當下時間，供 is_open_at 過濾營業中的店家
+    open_now = bool(intent_data.get("open_now"))
+    now_dt = None
+    if open_now and current_time:
+        try:
+            now_dt = datetime.strptime(current_time, "%Y-%m-%d %H:%M")
+        except ValueError:
+            print(f"{YELLOW}警告: current_time 格式無法解析（{current_time}），略過營業時間過濾{RESET}")
+            open_now = False
+
+    print(f"{CYAN}[DEBUG] 原始條件 - 地區: '{target_location}', 口味: '{target_style}', "
+          f"open_now: {open_now}{RESET}")
 
     # --- 地理位置處理 (Geocoding) ---
     target_coords = None
@@ -245,8 +398,13 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             print(f"{YELLOW}警告: 無法獲取 '{geocode_location}' 的經緯度（耗時 {_geo_elapsed:.1f}s），將使用字串模糊比對回退機制。{RESET}")
 
     filtered_results = []
-    # 預設搜尋半徑 (公里)；2km 確保結果貼近使用者指定地點
+    # 預設搜尋半徑 (公里)；2km 確保結果貼近使用者指定地點。
+    # 使用者若明確指定範圍（例如「方圓 5 公里」），intent 的 radius_km 覆寫預設值。
     SEARCH_RADIUS_KM = 2.0
+    radius_km = intent_data.get("radius_km")
+    if isinstance(radius_km, (int, float)) and radius_km > 0:
+        SEARCH_RADIUS_KM = float(radius_km)
+        print(f"{CYAN}[DEBUG] 使用者指定搜尋半徑：{SEARCH_RADIUS_KM}km{RESET}")
 
     for _shop in all_shops:
         # 已標記暫停營業的店家不應推薦給使用者
@@ -303,8 +461,16 @@ def filter_ramen_data(intent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             ):
                 match_location = True
 
-        if match_location:
-            filtered_results.append(shop)
+        if not match_location:
+            continue
+
+        # 3. 營業時間比對（僅「現在有開」查詢啟用）
+        # 無 opening_hours 資料的店家無法確認營業狀態，寧缺勿錯，一律排除。
+        if open_now and now_dt is not None:
+            if not is_open_at(shop.get("opening_hours"), now_dt):
+                continue
+
+        filtered_results.append(shop)
 
     # 若有距離資訊，依距離排序
     if any("distance_km" in s for s in filtered_results):
