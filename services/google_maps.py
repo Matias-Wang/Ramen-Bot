@@ -277,6 +277,49 @@ class GoogleMapsService:
             print(f"{RED}STEP ERROR: 用 place_id 取得照片失敗: {e}{RESET}")
             return None
 
+    def get_opening_hours_by_place_id(self, place_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Places API (New) Place Details：用 place_id 取得營業時間。
+
+        Field Masking 僅請求 regularOpeningHours，供「現在有開的店」查詢使用。
+        每間店僅需 1 次 API 呼叫。
+
+        Parameters
+        ----------
+        place_id : str
+            Google Places 店家 ID（格式：ChIJ...）。
+
+        Returns
+        -------
+        Optional[Dict[str, Any]]
+            {"periods": [...], "weekday_text": [...]}；periods 為 API 原生
+            {open:{day,hour,minute}, close:{...}} 結構。查無營業時間時 periods 為空清單，
+            API 呼叫失敗時回傳 None。
+        """
+        if not self.api_key:
+            return None
+
+        if not check_and_increment("google_maps_api"):
+            return None
+
+        try:
+            url = f"{PLACES_NEW_BASE_URL}/places/{place_id}"
+            headers = {
+                "X-Goog-Api-Key": self.api_key,
+                "X-Goog-FieldMask": "regularOpeningHours",
+            }
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            hours = data.get("regularOpeningHours", {})
+            return {
+                "periods": hours.get("periods", []),
+                "weekday_text": hours.get("weekdayDescriptions", []),
+            }
+        except Exception as e:
+            print(f"{RED}STEP ERROR: 用 place_id 取得營業時間失敗: {e}{RESET}")
+            return None
+
     def get_photo_url(self, photo_name: str, max_height_px: int = 800) -> Optional[str]:
         """
         Places API (New) Media：將照片資源名稱轉換為有效的 HTTPS URL。

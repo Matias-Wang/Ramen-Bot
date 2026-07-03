@@ -53,6 +53,9 @@
 - ✅ 全局 Fallback 機制（任一 Skill 失敗均能優雅降級）
 - ✅ 非阻塞 Webhook 處理（背景 Thread，防止 LINE 1 秒逾時）
 - ✅ Webhook 訊息去重（`message.id`）、時間感知（`timestamp`）、群組/私聊分流（僅處理一對一私聊）
+- ✅ LINE 位置訊息（`LocationMessage`）定位推薦：分享 GPS 位置即以 Haversine 找最近 ≤3 間（預設 5km），找不到時告知搜尋範圍與最近距離
+- ✅ 「現在有開」查詢：依店家營業時間（Places `regularOpeningHours`）過濾當下營業中的店家
+- ✅ 指定搜尋範圍：文字提到「方圓 N 公里」時覆寫預設半徑
 
 ---
 
@@ -200,8 +203,9 @@ python app.py
 5. UI 組裝：SEARCH → `assemble_carousel()` Flex Carousel；INFO → `get_flex_bubble()` 單一 Bubble → 回傳 LINE
 
 ### 核心邏輯
-- **意圖解析**：只取必要欄位（intent, location, style, shop_name, query, ui_tag）；支援四種 intent：SEARCH_BY_CRITERIA / GET_SPECIFIC_INFO / KNOWLEDGE_QUERY / REPORT_ERROR
-- **地理篩選**：行政區查詢（區/市/縣結尾）直接比對 `location` 欄位字串，跳過 Geocoding；捷運站等精確點查詢用 Geocoding 取座標 → Haversine 2km；無座標則同樣回退字串 fallback；>3 筆則 random.sample
+- **意圖解析**：只取必要欄位（intent, location, style, shop_name, query, radius_km, open_now, ui_tag）；支援四種 intent：SEARCH_BY_CRITERIA / GET_SPECIFIC_INFO / KNOWLEDGE_QUERY / REPORT_ERROR
+- **地理篩選**：行政區查詢（區/市/縣結尾）直接比對 `location` 欄位字串，跳過 Geocoding；捷運站等精確點查詢用 Geocoding 取座標 → Haversine 預設 2km（`radius_km` 可覆寫）；無座標則同樣回退字串 fallback；>3 筆則 random.sample。LINE 位置訊息則以 `filter_by_location()` 直接對座標跑 Haversine 取最近 ≤3 間（預設 5km）
+- **營業時間過濾**：`open_now` 為真時，以 `is_open_at()` 依 `opening_hours.periods` 過濾當下營業中的店家（無資料店家排除）
 - **推薦文**：30-60 字繁體中文，溫度 0.6，max_output_tokens 400
 - **快取**：Info Skill 7 天 TTL，過期才呼叫 Places API
 

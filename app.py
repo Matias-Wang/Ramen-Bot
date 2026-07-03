@@ -11,12 +11,19 @@ import threading
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, FlexSendMessage
+from linebot.models import (
+    MessageEvent,
+    TextMessage,
+    LocationMessage,
+    TextSendMessage,
+    FlexSendMessage,
+)
 from dotenv import load_dotenv
 
 # === 外部模組匯入 ===
 from core.agent_router import AgentRouter
 from core.flex_handler import assemble_carousel, get_flex_bubble
+from skills.Search_skill import filter_by_location, generate_recommendations
 from core.message_dedup import is_duplicate_message
 from core.usage_tracker import check_and_increment
 from skills.feedback_skill import collect_report, check_pending_reports
@@ -232,6 +239,62 @@ def _reply_to_line(user_text: str, user_id: str, current_time: str) -> None:
             print(f"{RED}ERROR: push_message 失敗（確認使用者是否加好友）: {reply_err}{RESET}")
 
 
+def _reply_location(lat: float, lng: float, user_id: str) -> None:
+    """
+    在背景執行緒中處理 LINE 位置訊息：以使用者座標找最近的拉麵店並回覆。
+
+    不經過 AgentRouter 意圖解析（位置訊息無文字語意），直接跑 Haversine
+    比對店家快取，複用推薦文生成與 Carousel 組裝。
+
+    Parameters
+    ----------
+    lat : float
+        使用者所在緯度。
+    lng : float
+        使用者所在經度。
+    user_id : str
+        LINE 使用者 ID，用於 push_message。
+    """
+    _t_start = time.time()
+    print(f"{CYAN}[TIMER] 開始處理位置訊息: ({lat}, {lng}){RESET}")
+    try:
+        results, nearest_km = filter_by_location(lat, lng)
+
+        # 半徑內找不到：明白告知搜尋範圍與最近一間距離
+        if not results:
+            if nearest_km is not None:
+                text = (
+                    f"已在您位置 5 公里內搜尋，找不到拉麵店。\n"
+                    f"最近的一間約在 {nearest_km} 公里外，若想擴大範圍，"
+                    f"可直接用文字告訴我（例如「附近 10 公里的拉麵」）。"
+                )
+            else:
+                text = "已在您位置 5 公里內搜尋，目前找不到可推薦的拉麵店。"
+            check_and_increment("line_api")
+            line_bot_api.push_message(user_id, TextSendMessage(text=text))
+            return
+
+        recommendations = generate_recommendations(
+            results, router.client, router.model_name, num_shops=len(results)
+        )
+        carousel_contents = assemble_carousel(results, recommendations)
+        flex = FlexSendMessage(alt_text="附近的拉麵推薦", contents=carousel_contents)
+        check_and_increment("line_api")
+        line_bot_api.push_message(user_id, flex)
+        print(f"{GREEN}[TIMER] 位置訊息回覆完成，全程總耗時 {time.time() - _t_start:.1f}s{RESET}")
+
+    except Exception as e:
+        print(f"{RED}ERROR in _reply_location: {e} | 全程耗時 {time.time() - _t_start:.1f}s{RESET}")
+        try:
+            check_and_increment("line_api")
+            line_bot_api.push_message(
+                user_id,
+                TextSendMessage(text='系統忙碌中，請稍後再試。')
+            )
+        except Exception as reply_err:
+            print(f"{RED}ERROR: push_message 失敗（確認使用者是否加好友）: {reply_err}{RESET}")
+
+
 TAIPEI_TZ = timezone(timedelta(hours=8))
 
 
@@ -259,6 +322,31 @@ def handle_message(event: MessageEvent) -> None:
     thread = threading.Thread(
         target=_reply_to_line,
         args=(user_text, user_id, current_time),
+        daemon=True,
+    )
+    thread.start()
+
+
+@handler.add(MessageEvent, message=LocationMessage)
+def handle_location(event: MessageEvent) -> None:
+    """
+    LINE 位置訊息事件入口。立即返回（非阻塞），由背景執行緒處理定位推薦與回覆。
+
+    沿用 handle_message 的兩道防護：僅處理一對一私聊、並以 message.id 去重。
+    """
+    if event.source.type != "user":
+        print(f"{YELLOW}STEP: 來源非一對一私聊（{event.source.type}），忽略此位置訊息{RESET}")
+        return
+
+    if is_duplicate_message(event.message.id):
+        return
+
+    user_id = event.source.user_id
+    lat = event.message.latitude
+    lng = event.message.longitude
+    thread = threading.Thread(
+        target=_reply_location,
+        args=(lat, lng, user_id),
         daemon=True,
     )
     thread.start()

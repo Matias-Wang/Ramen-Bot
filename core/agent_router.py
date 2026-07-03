@@ -185,7 +185,7 @@ class AgentRouter:
                     "error_description": intent_data.get("query") or user_text,
                 }]
             else:  # SEARCH_BY_CRITERIA
-                results = filter_ramen_data(intent_data)
+                results = filter_ramen_data(intent_data, current_time=current_time)
         except Exception as e:
             print(f"{RED}STEP 2 ERROR:{e}{RESET}")
             results = []

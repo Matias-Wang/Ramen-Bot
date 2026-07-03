@@ -3,6 +3,8 @@
 涵蓋：Haversine 距離計算、店家摘要建構。
 """
 
+from datetime import datetime
+
 import pytest
 import skills.Search_skill as search_skill
 from skills.Search_skill import (
@@ -10,6 +12,8 @@ from skills.Search_skill import (
     build_shop_summary,
     _build_geocode_query,
     filter_ramen_data,
+    filter_by_location,
+    is_open_at,
 )
 
 
@@ -310,3 +314,171 @@ class TestFilterRamenDataStyleAndCombined:
     def test_more_than_three_matches_capped_at_three(self):
         result = filter_ramen_data({"style": "豚骨"})
         assert len(result) == 3
+
+
+# ─── is_open_at ────────────────────────────────────────────────────────────────
+
+class TestIsOpenAt:
+    """營業時間判斷；periods 採 Places API day 編碼（0=週日 ... 6=週六）。"""
+
+    # 2026-07-06 為週一（weekday()=0 → Places day 1）
+    _MON_NOON = datetime(2026, 7, 6, 12, 0)
+    _MON_EVENING = datetime(2026, 7, 6, 15, 30)
+    # 2026-07-11 為週六（weekday()=5 → Places day 6）
+    _SAT_1AM = datetime(2026, 7, 11, 1, 0)
+
+    def test_open_within_same_day_period(self):
+        hours = {"periods": [
+            {"open": {"day": 1, "hour": 11}, "close": {"day": 1, "hour": 14}}
+        ]}
+        assert is_open_at(hours, self._MON_NOON) is True
+
+    def test_closed_outside_same_day_period(self):
+        hours = {"periods": [
+            {"open": {"day": 1, "hour": 11}, "close": {"day": 1, "hour": 14}}
+        ]}
+        assert is_open_at(hours, self._MON_EVENING) is False
+
+    def test_cross_midnight_period_open_after_midnight(self):
+        """週五 18:00 開到週六 02:00，週六 01:00 應判為營業中。"""
+        hours = {"periods": [
+            {"open": {"day": 5, "hour": 18}, "close": {"day": 6, "hour": 2}}
+        ]}
+        assert is_open_at(hours, self._SAT_1AM) is True
+
+    def test_empty_periods_is_closed(self):
+        assert is_open_at({"periods": []}, self._MON_NOON) is False
+
+    def test_none_hours_is_closed(self):
+        assert is_open_at(None, self._MON_NOON) is False
+
+    def test_missing_periods_key_is_closed(self):
+        assert is_open_at({}, self._MON_NOON) is False
+
+    def test_no_close_field_means_always_open(self):
+        """Places API 僅在 24 小時營業時省略 close，任何時間皆營業中。"""
+        hours = {"periods": [{"open": {"day": 0, "hour": 0, "minute": 0}}]}
+        assert is_open_at(hours, self._MON_EVENING) is True
+
+
+# ─── filter_by_location（LINE 位置訊息定位推薦） ─────────────────────────────────
+
+_ZHONGSHAN_CENTER = (25.0532, 121.5201)  # 中山站附近
+
+
+class TestFilterByLocation:
+    def test_returns_nearby_shops_sorted_by_distance(self):
+        results, nearest_km = filter_by_location(*_ZHONGSHAN_CENTER, radius_km=2.0)
+        ids = [s["id"] for s in results]
+        assert "shop_zhongshan_tonkotsu" in ids
+        assert "shop_zhongshan_miso" in ids
+        assert "shop_far_away" not in ids  # 桃園約 30km，超出半徑
+        distances = [s["distance_km"] for s in results]
+        assert distances == sorted(distances)
+
+    def test_caps_at_three_results(self):
+        results, _ = filter_by_location(*_ZHONGSHAN_CENTER, radius_km=50.0)
+        assert len(results) <= 3
+
+    def test_excludes_shop_without_coordinates(self):
+        results, _ = filter_by_location(*_ZHONGSHAN_CENTER, radius_km=50.0)
+        ids = [s["id"] for s in results]
+        assert "shop_no_coords" not in ids
+
+    def test_excludes_closed_shop(self):
+        results, _ = filter_by_location(*_ZHONGSHAN_CENTER, radius_km=2.0)
+        ids = [s["id"] for s in results]
+        assert "shop_closed" not in ids
+
+    def test_style_filter_applied(self):
+        results, _ = filter_by_location(*_ZHONGSHAN_CENTER, radius_km=2.0, style="味噌")
+        ids = [s["id"] for s in results]
+        assert ids == ["shop_zhongshan_miso"]
+
+    def test_empty_result_still_reports_nearest_km(self):
+        """半徑內找不到時，nearest_km 仍應回傳最近一間的距離供回覆訊息使用。"""
+        results, nearest_km = filter_by_location(*_ZHONGSHAN_CENTER, radius_km=0.01)
+        assert results == []
+        assert nearest_km is not None
+        assert nearest_km > 0.01
+
+    def test_does_not_mutate_cached_shops(self):
+        """distance_km 應寫在複本上，不汙染快取原始 dict。"""
+        filter_by_location(*_ZHONGSHAN_CENTER, radius_km=2.0)
+        assert all("distance_km" not in s for s in _make_test_shops())
+
+
+# ─── filter_ramen_data：radius_km 覆寫與 open_now 過濾 ──────────────────────────
+
+class TestFilterRamenDataRadiusOverride:
+    def test_custom_radius_shrinks_result(self):
+        """極小的自訂半徑應排除原本 2km 內會命中的店家。"""
+        full = filter_ramen_data({"location": "中山站"})
+        tiny = filter_ramen_data({"location": "中山站", "radius_km": 0.02})
+        assert len(full) > len(tiny)
+
+    def test_district_query_ignores_radius(self):
+        """行政區查詢走字串比對、不使用半徑，radius_km 不應影響結果。"""
+        result = filter_ramen_data({"location": "中山區", "radius_km": 0.02})
+        ids = [s["id"] for s in result]
+        assert "shop_zhongshan_tonkotsu" in ids
+
+
+def _make_open_now_shops() -> list[dict]:
+    """建立含 opening_hours 的測試店家：一間營業中、一間已打烊、一間無資料。"""
+    return [
+        {
+            "id": "shop_open",
+            "name": "營業中拉麵",
+            "location": "台北市中山區",
+            "style": "豚骨",
+            "coordinates": {"lat": 25.0540, "lng": 121.5205},
+            "opening_hours": {"periods": [
+                {"open": {"day": 1, "hour": 11}, "close": {"day": 1, "hour": 14}}
+            ]},
+        },
+        {
+            "id": "shop_shut",
+            "name": "打烊拉麵",
+            "location": "台北市中山區",
+            "style": "豚骨",
+            "coordinates": {"lat": 25.0520, "lng": 121.5195},
+            "opening_hours": {"periods": [
+                {"open": {"day": 1, "hour": 17}, "close": {"day": 1, "hour": 21}}
+            ]},
+        },
+        {
+            "id": "shop_no_hours",
+            "name": "無營業時間拉麵",
+            "location": "台北市中山區",
+            "style": "豚骨",
+            "coordinates": {"lat": 25.0530, "lng": 121.5200},
+        },
+    ]
+
+
+class TestFilterRamenDataOpenNow:
+    _MON_NOON = "2026-07-06 12:00"  # 週一 12:00
+
+    def test_open_now_keeps_only_currently_open(self, monkeypatch):
+        monkeypatch.setattr(search_skill, "_load_all_shops", _make_open_now_shops)
+        result = filter_ramen_data(
+            {"location": "中山區", "open_now": True}, current_time=self._MON_NOON
+        )
+        ids = [s["id"] for s in result]
+        assert ids == ["shop_open"]
+
+    def test_open_now_excludes_shop_without_hours(self, monkeypatch):
+        monkeypatch.setattr(search_skill, "_load_all_shops", _make_open_now_shops)
+        result = filter_ramen_data(
+            {"location": "中山區", "open_now": True}, current_time=self._MON_NOON
+        )
+        ids = [s["id"] for s in result]
+        assert "shop_no_hours" not in ids
+
+    def test_without_open_now_all_shops_included(self, monkeypatch):
+        """未要求 open_now 時，營業時間不參與過濾。"""
+        monkeypatch.setattr(search_skill, "_load_all_shops", _make_open_now_shops)
+        result = filter_ramen_data({"location": "中山區"}, current_time=self._MON_NOON)
+        ids = [s["id"] for s in result]
+        assert set(ids) == {"shop_open", "shop_shut", "shop_no_hours"}
