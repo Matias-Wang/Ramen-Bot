@@ -81,8 +81,11 @@ except Exception as e:
     print(f"{YELLOW}[STARTUP] Google Maps Geocoding 預熱失敗（非致命）: {e}{RESET}")
 
 # LINE API 連線預熱（降低第一次 push_message 延遲）
+# 舊版呼叫的 get_quota() 在目前 linebot SDK 已不存在（正確方法為
+# get_message_quota()），導致 AttributeError 被吞掉、預熱從未真正執行，
+# 造成正式環境第一次 push_message 需承擔冷連線成本（實測約 22 秒）。
 try:
-    line_bot_api.get_quota()
+    line_bot_api.get_message_quota()
     print(f"{GREEN}[STARTUP] LINE API 連線預熱完成{RESET}")
 except Exception as e:
     print(f"{YELLOW}[STARTUP] LINE API 連線預熱失敗（非致命）: {e}{RESET}")

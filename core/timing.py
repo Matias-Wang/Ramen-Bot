@@ -56,7 +56,8 @@ def record(name: str, seconds: float, records: Optional[_Records] = None) -> Non
     Parameters
     ----------
     name : str
-        LLM 呼叫名稱（例如 "intent"、"rec[0]"、"info_summary"、"knowledge"）。
+        呼叫名稱（例如 "intent"、"rec[0]"、"info_summary"、"knowledge"，
+        或用量追蹤的 Firestore I/O "quota:llm_gemini" 等）。
     seconds : float
         該次呼叫耗時（秒）。
     records : Optional[_Records]
@@ -66,7 +67,7 @@ def record(name: str, seconds: float, records: Optional[_Records] = None) -> Non
     target = records if records is not None else _records.get()
     if target is not None:
         target.append((name, round(seconds, 2)))
-    print(f"{CYAN}[LLM] {name}: {seconds:.2f}s{RESET}")
+    print(f"{CYAN}[TIMED] {name}: {seconds:.2f}s{RESET}")
 
 
 @contextmanager

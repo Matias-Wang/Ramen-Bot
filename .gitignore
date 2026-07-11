@@ -30,6 +30,7 @@ data_logs/
 
 # 審查
 review/
+line_screenshot/
 
 # knowledge
 knowledge/

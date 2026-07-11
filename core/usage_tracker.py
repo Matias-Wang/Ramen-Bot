@@ -1,6 +1,9 @@
 import json
 import os
+import time
 from datetime import date
+
+from core import timing
 
 # <使用者自訂變數>
 RED = "\033[91m"
@@ -87,6 +90,7 @@ def check_and_increment(key: str) -> bool:
         return True
 
     print(f"{GREEN}STEP: 檢查 {key} 使用配額{RESET}")
+    _t0 = time.time()
     try:
         data = _load()
         data = _reset_if_new_day(data)
@@ -107,6 +111,10 @@ def check_and_increment(key: str) -> bool:
         # 追蹤本身失敗時不阻擋正常流程
         print(f"{RED}STEP ERROR: 使用量追蹤失敗: {e}{RESET}")
         return True
+    finally:
+        # Firestore 模式下 _load/_save 各一次網路往返，先前未被 KPI 計時，
+        # 曾造成「LLM 3.11s」與「STEP 總耗時 6.3s」間出現~3.2s 不明缺口。
+        timing.record(f"quota:{key}", time.time() - _t0)
 
 
 def record_tokens(tokens: int) -> None:
@@ -121,6 +129,7 @@ def record_tokens(tokens: int) -> None:
     if os.getenv("E2E_TEST_MODE") == "1":
         return
 
+    _t0 = time.time()
     try:
         data = _load()
         data = _reset_if_new_day(data)
@@ -128,3 +137,5 @@ def record_tokens(tokens: int) -> None:
         _save(data)
     except Exception as e:
         print(f"{RED}STEP ERROR: Token 記錄失敗: {e}{RESET}")
+    finally:
+        timing.record("quota:record_tokens", time.time() - _t0)
