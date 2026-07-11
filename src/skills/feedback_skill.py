@@ -19,7 +19,9 @@ RED = "\033[91m"
 GREEN = "\033[92m"
 RESET = "\033[0m"
 
-_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "log")
+_LOG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "log"
+)
 FEEDBACK_LOG_PATH = os.path.join(_LOG_DIR, "feedback_reports.json")
 FIRESTORE_COLLECTION = "feedback_reports"
 

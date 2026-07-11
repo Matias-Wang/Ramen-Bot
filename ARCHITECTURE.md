@@ -63,7 +63,7 @@
 
 ## 技能開發規範 (Skill Specifications)
 
-### Search Skill (條件搜尋) — `skills/Search_skill.py`
+### Search Skill (條件搜尋) — `src/skills/Search_skill.py`
 - **數據源**：本地 `data/ramen_data.json` / 生產 Firestore `ramen_shops` collection + Geocoding API
 - **核心邏輯**：
     1. 口味比對：`target_style in shop["style"]` 模糊比對
@@ -85,7 +85,7 @@
   不經 Geocoding、不隨機抽選，直接對店家快取跑 Haversine，依距離排序取最近 ≤3 間；
   回傳 `(results, nearest_km)`，`nearest_km` 供半徑內找不到時回覆使用者最近一間的距離
 
-### Info Skill (即時數據增強) — `skills/info_skill.py`
+### Info Skill (即時數據增強) — `src/skills/info_skill.py`
 - **數據源**：本地 `data/ramen_data.json` / 生產 Firestore `ramen_shops` + Google Places API (New)
 - **快取邏輯**：
     1. 檢查本地（或 Firestore）是否有 `place_id` 且 `last_updated` 在 7 天以內
@@ -95,15 +95,15 @@
 - **介紹文生成**：有 `description`（IG 食記）時，以 `INFO_SUMMARY_PROMPT` 呼叫 Gemini 摘要為列點式介紹文、總長 150 字以內（`summarize_description()`）；無 `description` 時回退至 `RECOMMEND_PROMPT` 生成 30-60 字推薦文（同 Search Skill 的 `generate_recommendations`）。兩個函式皆已關閉 `gemini-2.5-flash` 預設的 thinking（`thinking_config=ThinkingConfig(thinking_budget=0)`），避免思考鏈消耗 `max_output_tokens` 預算導致輸出被硬切斷
 - **輸出格式**：FlexSendMessage 單一 Bubble，含 Map 按鈕 + social_links 按鈕（邏輯與 Search Skill Carousel 相同，使用 `get_flex_bubble()`）
 
-### Feedback Skill (錯誤回報佇列) — `skills/feedback_skill.py`
+### Feedback Skill (錯誤回報佇列) — `src/skills/feedback_skill.py`
 - **數據源**：本地 `log/feedback_reports.json` / 生產 Firestore `feedback_reports` collection
 - **核心邏輯**：
     1. `collect_report(shop_name, error_description, user_id)`：將回報寫入儲存（雙路徑），每筆含 UUID、時間戳、`status="pending"`
-    2. `check_pending_reports()`：於 `app.py` 啟動時自動呼叫，讀取 `status=pending` 的回報並印出至 console
+    2. `check_pending_reports()`：於 `src/app.py` 啟動時自動呼叫，讀取 `status=pending` 的回報並印出至 console
 - **修正流程**：人工確認後，將回報的 `status` 欄位改為 `"resolved"`（不再被 `check_pending_reports` 列出）
 - **輸出格式**：TextSendMessage 確認訊息（不使用 Flex）
 
-### Knowledge Skill (RAG 知識庫) — `skills/knowledge_skill.py`
+### Knowledge Skill (RAG 知識庫) — `src/skills/knowledge_skill.py`
 - **數據源**：`knowledge/` 目錄下的 `.txt` / `.md` 知識文件
 - **技術棧**：本地 ChromaDB + 生產 Firestore `ramen_knowledge` collection，均使用 Google Embedding API（`gemini-embedding-001`，768 維）
 - **核心邏輯**：
@@ -112,7 +112,7 @@
     3. 若索引已存在則直接載入，不重複建立（刪除 `.chroma_db/` 可強制重建）
     4. 查詢時嵌入問題（`task_type=retrieval_query`），取 Top-3 相關段落
     5. 組合 context 後交由 Gemini 以「拉麵大師」語氣生成回答
-- **Prompt**：`KNOWLEDGE_ANSWER_PROMPT`（位於 `core/prompts.py`）
+- **Prompt**：`KNOWLEDGE_ANSWER_PROMPT`（位於 `src/core/prompts.py`）
 
 ---
 
@@ -127,13 +127,13 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
 ### Webhook 事件特徵擴充（v1 已完成）
 > 對應 `line_response_usage.md` 第一階段（內容已併入本文件後刪除原檔）；第二、三階段（多模態事件、SLM 微調）列為後續優化項目，詳見 `PENDING.md`。
 
-- **訊息去重 (`event.message.id`)**：`core/message_dedup.py` 的 `is_duplicate_message()` 在 `handle_message` 啟動背景執行緒前檢查，重複請求直接跳過（仍回 200），避免 LINE webhook 重送導致 Gemini 被重複觸發計費。本地：記憶體 `set`；生產：Firestore `processed_message_ids` collection（雙路徑判斷邏輯同 `DATA_BACKEND`）。
+- **訊息去重 (`event.message.id`)**：`src/core/message_dedup.py` 的 `is_duplicate_message()` 在 `handle_message` 啟動背景執行緒前檢查，重複請求直接跳過（仍回 200），避免 LINE webhook 重送導致 Gemini 被重複觸發計費。本地：記憶體 `set`；生產：Firestore `processed_message_ids` collection（雙路徑判斷邏輯同 `DATA_BACKEND`）。
 - **時間感知 (`event.timestamp`)**：`handle_message` 將毫秒時戳轉換為台北時間字串，透過 `AgentRouter.dispatch(user_text, current_time=...)` 注入 STEP 1 意圖解析的 `contents`，供 Gemini 解析「今天」、「最近」等相對時間用語。
   - 注：目前 `ramen_data.json` 尚無營業時間欄位，「現在有開的店」類查詢仍需額外資料工程才能實作，此處僅先注入時間感知本身。
 - **來源環境分流 (`event.source.type`)**：`handle_message` 最前面判斷，非一對一私聊（`source.type != "user"`，即群組/多人聊天室）直接忽略、不呼叫 Gemini。範圍經使用者確認：目前不需要 @ 標記偵測。
 
 ### 多事件響應：LocationMessage 定位推薦（階段二）
-使用者直接分享 LINE 位置（GPS pin）時，`app.py` 的 `@handler.add(MessageEvent, message=LocationMessage)`
+使用者直接分享 LINE 位置（GPS pin）時，`src/app.py` 的 `@handler.add(MessageEvent, message=LocationMessage)`
 → `handle_location` → 背景執行緒 `_reply_location(lat, lng, user_id)`：
 - **繞過 AgentRouter**：位置訊息無文字語意，不需 Gemini 意圖解析（省一次 LLM 呼叫），
   直接呼叫 `filter_by_location()` 跑 Haversine。
@@ -148,7 +148,7 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
 ### 自動化優化管線埋點（conversation_logs）
 為了讓地端 Claude Code 能分析真實對話、抓出意圖分類錯誤並盤點資料盲區，系統在
 AgentRouter 解析完意圖後埋點：
-- **埋點位置**：`core/conversation_logger.py` 的 `log_conversation()`，由 `_dispatch_inner`
+- **埋點位置**：`src/core/conversation_logger.py` 的 `log_conversation()`，由 `_dispatch_inner`
   在 STEP 3 完成、回傳前呼叫（STEP 1 例外的 FALLBACK 路徑不埋點）。
 - **非阻塞**：僅在 `DATA_BACKEND=firestore` 生效，以 fire-and-forget daemon thread 寫入
   Firestore `conversation_logs`，不增加 dispatch 延遲；寫入失敗只印錯誤、不影響 LINE 回覆。
@@ -182,7 +182,7 @@ AgentRouter 解析完意圖後埋點：
   - `usage_tracker.py`：提供 `check_and_increment(key)` 與 `record_tokens(tokens)` 兩支函式。
 
 ### 數據一致性校驗 (Data Integrity)
-- **Pipeline 驗證**：`build_new_shops.py` 呼叫 `services/google_maps.py` 的 `verify_shop_status()`（Places API New）驗證店家是否仍在營業，過濾 `CLOSED_PERMANENTLY` 店家。
+- **Pipeline 驗證**：`build_new_shops.py` 呼叫 `src/services/google_maps.py` 的 `verify_shop_status()`（Places API New）驗證店家是否仍在營業，過濾 `CLOSED_PERMANENTLY` 店家。
 - **型別安全渲染**：`flex_handler.py` 嚴格執行索引配對，確保推薦文案與店家位置精確對齊，禁止生成空盒子 UI。
 
 ### 本地 / 生產雙路徑設計（DATA_BACKEND）
@@ -190,12 +190,12 @@ AgentRouter 解析完意圖後埋點：
 
 | `DATA_BACKEND` | 資料層 | 向量索引 | 啟動方式 |
 |----------------|--------|---------|---------|
-| `local`（預設） | `data/ramen_data.json` | ChromaDB | `python app.py` |
+| `local`（預設） | `data/ramen_data.json` | ChromaDB | `python src/app.py` |
 | `firestore` | Firestore `ramen_shops` | Firestore KNN | Cloud Run + gunicorn |
 
 各模組均在對應函式頂層以 `USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"` 判斷路徑。
 
-**Firestore Client Singleton**：`services/firestore_client.py` 提供全域單一 `firestore.Client` 實例（`get_db()`），所有模組共用同一 gRPC 連線，避免每次請求重新建立連線的高延遲（每次建立需 5-30 秒）。
+**Firestore Client Singleton**：`src/services/firestore_client.py` 提供全域單一 `firestore.Client` 實例（`get_db()`），所有模組共用同一 gRPC 連線，避免每次請求重新建立連線的高延遲（每次建立需 5-30 秒）。
 
 ---
 
@@ -222,28 +222,29 @@ AgentRouter 解析完意圖後埋點：
 
 ```
 Ramen-Bot/
-├── app.py                  # 入口管理（LINE_TAG 切換正式/測試模式）
-├── Dockerfile              # Cloud Run 容器化設定（gunicorn）
+├── src/                     # 上線會用到的程式碼（Docker image 實際內容，WORKDIR）
+│   ├── app.py               # 入口管理（LINE_TAG 切換正式/測試模式）
+│   ├── core/                    # 核心業務邏輯模組
+│   │   ├── agent_router.py      # [CORE] 意圖分發大腦（含全局 Fallback）
+│   │   ├── flex_handler.py      # [CORE] UI 渲染引擎
+│   │   ├── prompts.py           # LLM Prompt 存放處
+│   │   ├── conversation_logger.py  # 對話特徵埋點（雲端 conversation_logs，本地 no-op）
+│   │   └── usage_tracker.py     # 每日配額檢查（本地 JSON / Firestore 雙路徑）
+│   ├── skills/
+│   │   ├── Search_skill.py      # [SKILL 1] 條件搜尋（本地 JSON / Firestore 雙路徑）
+│   │   ├── info_skill.py        # [SKILL 2] 特定店家即時資訊（本地 JSON / Firestore 雙路徑）
+│   │   ├── knowledge_skill.py   # [SKILL 3] RAG 知識庫（ChromaDB 本地 / Firestore KNN 雙路徑）
+│   │   └── feedback_skill.py    # [SKILL 4] 錯誤回報佇列（本地 JSON / Firestore 雙路徑）
+│   └── services/
+│       ├── google_maps.py       # Google Maps API 統一封裝
+│       └── firestore_client.py  # Firestore Client Singleton（全域共用連線）
+├── Dockerfile              # Cloud Run 容器化設定（gunicorn，WORKDIR /app/src）
 ├── .dockerignore           # 排除 .env / data/ / log/ / .chroma_db/ 等
-├── pytest.ini              # pytest 設定
+├── pytest.ini              # pytest 設定（pythonpath = src）
 ├── requirements.txt        # 依賴套件清單
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml      # CI/CD：push to main → Build → Artifact Registry → Cloud Run
-├── core/                   # 核心業務邏輯模組
-│   ├── agent_router.py     # [CORE] 意圖分發大腦（含全局 Fallback）
-│   ├── flex_handler.py     # [CORE] UI 渲染引擎
-│   ├── prompts.py          # LLM Prompt 存放處
-│   ├── conversation_logger.py  # 對話特徵埋點（雲端 conversation_logs，本地 no-op）
-│   └── usage_tracker.py    # 每日配額檢查（本地 JSON / Firestore 雙路徑）
-├── skills/
-│   ├── Search_skill.py     # [SKILL 1] 條件搜尋（本地 JSON / Firestore 雙路徑）
-│   ├── info_skill.py       # [SKILL 2] 特定店家即時資訊（本地 JSON / Firestore 雙路徑）
-│   ├── knowledge_skill.py  # [SKILL 3] RAG 知識庫（ChromaDB 本地 / Firestore KNN 雙路徑）
-│   └── feedback_skill.py   # [SKILL 4] 錯誤回報佇列（本地 JSON / Firestore 雙路徑）
-├── services/
-│   ├── google_maps.py          # Google Maps API 統一封裝
-│   └── firestore_client.py     # Firestore Client Singleton（全域共用連線）
 ├── scripts/
 │   ├── build_new_shops.py                # 資料清洗 Pipeline（data/resource/ IG 匯出包 → LLM → Maps → 候選 JSON）
 │   ├── update_api_data.py                # 批次補全店家 place_id（支援 --dry-run）

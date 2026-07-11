@@ -78,45 +78,49 @@
 2. `flex_handler.py`：UI 渲染引擎，負責標準化 Flex Message 輸出。
 
 ### 獨立專業技能 [SKILLS]
-1. **Search Skill** (`skills/Search_skill.py`)：地理位置 + 口味條件篩選，非同步推薦文生成。
-2. **Info Skill** (`skills/info_skill.py`)：整合 Google Maps API，7 天快取策略取得即時評分與照片。
-3. **Knowledge Skill** (`skills/knowledge_skill.py`)：RAG 知識庫問答，ChromaDB 向量搜尋 + Gemini 生成。
-4. **Feedback Skill** (`skills/feedback_skill.py`)：收集使用者在 LINE 對話中的店家資料錯誤回報，支援本地 JSON 與 Firestore 雙路徑儲存，啟動時自動列出待處理項目。
+1. **Search Skill** (`src/skills/Search_skill.py`)：地理位置 + 口味條件篩選，非同步推薦文生成。
+2. **Info Skill** (`src/skills/info_skill.py`)：整合 Google Maps API，7 天快取策略取得即時評分與照片。
+3. **Knowledge Skill** (`src/skills/knowledge_skill.py`)：RAG 知識庫問答，ChromaDB 向量搜尋 + Gemini 生成。
+4. **Feedback Skill** (`src/skills/feedback_skill.py`)：收集使用者在 LINE 對話中的店家資料錯誤回報，支援本地 JSON 與 Firestore 雙路徑儲存，啟動時自動列出待處理項目。
 
 ### 目錄結構 (Directory Structure)
 ```
 Ramen-Bot/
-├── app.py                  # 入口（LINE_TAG=1 正式 / LINE_TAG=0 本機測試）
-├── Dockerfile              # Cloud Run 容器化設定
+├── src/                     # 上線會用到的程式碼（Docker image 實際內容）
+│   ├── app.py               # 入口（LINE_TAG=1 正式 / LINE_TAG=0 本機測試）
+│   ├── core/
+│   │   ├── agent_router.py      # [CORE] 意圖分發大腦（含全局 Fallback）
+│   │   ├── flex_handler.py      # [CORE] UI 渲染引擎
+│   │   ├── prompts.py           # LLM Prompt 存放處
+│   │   ├── conversation_logger.py  # 對話特徵埋點（雲端 conversation_logs）
+│   │   └── usage_tracker.py     # 每日配額檢查與 token 追蹤
+│   ├── skills/
+│   │   ├── Search_skill.py      # [SKILL 1] 條件搜尋
+│   │   ├── info_skill.py        # [SKILL 2] 特定店家資訊
+│   │   ├── knowledge_skill.py   # [SKILL 3] RAG 知識庫問答
+│   │   └── feedback_skill.py    # [SKILL 4] 使用者錯誤回報佇列
+│   └── services/
+│       ├── google_maps.py       # Google Maps API 統一封裝
+│       └── firestore_client.py  # Firestore Client Singleton（全域共用連線）
+├── Dockerfile               # Cloud Run 容器化設定（WORKDIR 指向 src/）
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml      # CI/CD：push to main 自動部署至 Cloud Run
-├── core/
-│   ├── agent_router.py     # [CORE] 意圖分發大腦（含全局 Fallback）
-│   ├── flex_handler.py     # [CORE] UI 渲染引擎
-│   ├── prompts.py          # LLM Prompt 存放處
-│   ├── conversation_logger.py  # 對話特徵埋點（雲端 conversation_logs）
-│   └── usage_tracker.py    # 每日配額檢查與 token 追蹤
-├── skills/
-│   ├── Search_skill.py     # [SKILL 1] 條件搜尋
-│   ├── info_skill.py       # [SKILL 2] 特定店家資訊
-│   ├── knowledge_skill.py  # [SKILL 3] RAG 知識庫問答
-│   └── feedback_skill.py   # [SKILL 4] 使用者錯誤回報佇列
-├── services/
-│   ├── google_maps.py          # Google Maps API 統一封裝
-│   └── firestore_client.py     # Firestore Client Singleton（全域共用連線）
 ├── tests/
 │   ├── test_search_skill.py
 │   ├── test_flex_handler.py
 │   └── test_usage_tracker.py
 ├── knowledge/
-│   └── .chroma_db/         # ChromaDB 向量索引（拉麵流派、點餐禮儀等知識已建入索引）
+│   └── .chroma_db/         # ChromaDB 向量索引（拉麵流派、點餐禮儀等知識已建入索引，本地開發）
 ├── data/
 │   └── ramen_data.json     # 主資料庫（本地開發）
 └── log/
     ├── usage.json              # 每日 API 用量紀錄（本地開發）
     └── feedback_reports.json   # 使用者錯誤回報佇列（本地開發）
 ```
+
+> 正式環境（Cloud Run）走 `DATA_BACKEND=firestore`，`data/`、`knowledge/`、`log/`
+> 皆不會被打包進 Docker image（見 `.dockerignore`），僅本機開發使用。
 
 ### 核心模組用途
 - **意圖解析**：Gemini 將使用者輸入轉成 `{intent, location, style, shop_name, ui_tag}`
@@ -158,15 +162,15 @@ GOOGLE_MAPS_API_KEY = GCP API Key
 
 ### 啟動 Bot（LINE 正式模式）
 ```bash
-# 1. 將 app.py 頂部的 LINE_TAG 設為 1
+# 1. 將 src/app.py 頂部的 LINE_TAG 設為 1
 # 2. 啟動 ngrok 並將 URL 設定至 LINE Developers Webhook URL
-python app.py
+python src/app.py
 ```
 
 ### 本機測試模式
 ```bash
 # LINE_TAG = 0（預設），直接在終端機互動
-python app.py
+python src/app.py
 # 輸入提問後，結果輸出至 temp.json
 ```
 
@@ -199,7 +203,7 @@ python app.py
 ## 系統設計（System Design）
 
 ### 流程（Pipeline）
-1. 使用者輸入文字 → LINE Webhook → `app.py`
+1. 使用者輸入文字 → LINE Webhook → `src/app.py`
 2. `AgentRouter.dispatch()` 呼叫 Gemini 解析意圖（`intent, location, style, shop_name`）
 3. 依 intent 分發至對應 Skill（Search / Info / Knowledge）
 4. `generate_recommendations()` 生成推薦文：SEARCH 並行 3 筆 / INFO 以 IG 食記摘要 1 筆

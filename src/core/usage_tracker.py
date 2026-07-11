@@ -11,7 +11,9 @@ YELLOW = "\033[93m"
 GREEN = "\033[92m"
 RESET = "\033[0m"
 
-LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "log", "usage.json")
+LOG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "log", "usage.json"
+)
 USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"
 
 
