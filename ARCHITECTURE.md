@@ -145,6 +145,19 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
 > 範圍指定/放大由**文字查詢路徑**承擔（意圖解析的 `radius_km` 覆寫 `filter_ramen_data` 的固定半徑），
 > 不在純 GPS 位置訊息引入跨訊息對話狀態（簡化設計）。
 
+### 自動化優化管線埋點（conversation_logs）
+為了讓地端 Claude Code 能分析真實對話、抓出意圖分類錯誤並盤點資料盲區，系統在
+AgentRouter 解析完意圖後埋點：
+- **埋點位置**：`core/conversation_logger.py` 的 `log_conversation()`，由 `_dispatch_inner`
+  在 STEP 3 完成、回傳前呼叫（STEP 1 例外的 FALLBACK 路徑不埋點）。
+- **非阻塞**：僅在 `DATA_BACKEND=firestore` 生效，以 fire-and-forget daemon thread 寫入
+  Firestore `conversation_logs`，不增加 dispatch 延遲；寫入失敗只印錯誤、不影響 LINE 回覆。
+  本地終端模式為 no-op。
+- **紀錄 schema**：`{timestamp（台北時間）, user_input, predicted_skill, args}`，`predicted_skill`
+  由 intent 映射為可讀 skill 名，`args` 為意圖字典去除 `intent`/`ui_tag`。
+- **地端同步**：`scripts/fetch_cloud_data.py` 把 `conversation_logs` → `data_logs/tracking_conversations.jsonl`、
+  `feedback_reports` → `data_logs/tracking_feedbacks.json`（皆完整覆寫，`data_logs/` 不進版控 / 容器）。
+
 ### 成本控管與效能限制 (Cost Guardrail)
 - **Field Masking**：呼叫 Google Places API 時，僅請求必要欄位，有效降低 API 消耗支出。
 - **圖片優化**：設定 `maxHeightPx` 為 800px，符合 LINE Flex Message 比例規範。
@@ -221,6 +234,7 @@ Ramen-Bot/
 │   ├── agent_router.py     # [CORE] 意圖分發大腦（含全局 Fallback）
 │   ├── flex_handler.py     # [CORE] UI 渲染引擎
 │   ├── prompts.py          # LLM Prompt 存放處
+│   ├── conversation_logger.py  # 對話特徵埋點（雲端 conversation_logs，本地 no-op）
 │   └── usage_tracker.py    # 每日配額檢查（本地 JSON / Firestore 雙路徑）
 ├── skills/
 │   ├── Search_skill.py     # [SKILL 1] 條件搜尋（本地 JSON / Firestore 雙路徑）
@@ -236,7 +250,8 @@ Ramen-Bot/
 │   ├── migrate_to_firestore.py           # 店家資料匯入/同步 Firestore（import / sync 模式）
 │   ├── migrate_knowledge_to_firestore.py # 知識庫向量索引寫入 Firestore（支援 --force）
 │   ├── setup_secrets.ps1                 # 從 .env 一鍵上傳金鑰至 Secret Manager
-│   └── append_new_shops.py               # 將 build_new_shops.py 產出的候選清單附加至 ramen_data.json（不比對重複）
+│   ├── append_new_shops.py               # 將 build_new_shops.py 產出的候選清單附加至 ramen_data.json（不比對重複）
+│   └── fetch_cloud_data.py               # 地端同步：雲端 conversation_logs / feedback_reports → data_logs/
 ├── tests/
 │   ├── test_search_skill.py    # Haversine 距離計算、店家摘要建構
 │   ├── test_flex_handler.py    # Bubble 生成、Carousel 組裝

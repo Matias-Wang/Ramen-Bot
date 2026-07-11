@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 # === 外部模組匯入 ===
 from core.agent_router import AgentRouter
 from core.flex_handler import assemble_carousel, get_flex_bubble
+from core import timing
 from skills.Search_skill import filter_by_location, generate_recommendations
 from core.message_dedup import is_duplicate_message
 from core.usage_tracker import check_and_increment
@@ -125,7 +126,9 @@ def callback() -> str:
     return 'OK'
 
 
-def _reply_to_line(user_text: str, user_id: str, current_time: str) -> None:
+def _reply_to_line(
+    user_text: str, user_id: str, current_time: str, received_at: float
+) -> None:
     """
     在背景執行緒中處理訊息並以 push_message 回覆 LINE。
     改用 push_message 取代 reply_message，根治 reply token 60 秒過期導致的延遲問題。
@@ -138,8 +141,11 @@ def _reply_to_line(user_text: str, user_id: str, current_time: str) -> None:
         LINE 使用者 ID，用於 push_message。
     current_time : str
         台北時間字串，傳入 AgentRouter 供 Gemini 判斷相對時間用語。
+    received_at : float
+        webhook 收到訊息當下的 time.time() 時戳，用於量測端到端 KPI。
     """
-    _t_start = time.time()
+    _t_start = received_at
+    result = None
     print(f"{CYAN}[TIMER] 開始處理訊息: {user_text!r}{RESET}")
     try:
         result = router.dispatch(user_text, current_time=current_time)
@@ -237,9 +243,16 @@ def _reply_to_line(user_text: str, user_id: str, current_time: str) -> None:
             )
         except Exception as reply_err:
             print(f"{RED}ERROR: push_message 失敗（確認使用者是否加好友）: {reply_err}{RESET}")
+    finally:
+        # 效能 KPI：webhook 收到 → 回覆推播完成的端到端耗時 + 各 LLM 呼叫明細
+        llm_snap = (result or {}).get("timing") or timing.snapshot(None)
+        kpi = {**llm_snap, "total_s": round(time.time() - _t_start, 2)}
+        print(f"{GREEN}[KPI][webhook] {timing.format_kpi(kpi)}{RESET}")
 
 
-def _reply_location(lat: float, lng: float, user_id: str) -> None:
+def _reply_location(
+    lat: float, lng: float, user_id: str, received_at: float
+) -> None:
     """
     在背景執行緒中處理 LINE 位置訊息：以使用者座標找最近的拉麵店並回覆。
 
@@ -254,8 +267,12 @@ def _reply_location(lat: float, lng: float, user_id: str) -> None:
         使用者所在經度。
     user_id : str
         LINE 使用者 ID，用於 push_message。
+    received_at : float
+        webhook 收到訊息當下的 time.time() 時戳，用於量測端到端 KPI。
     """
-    _t_start = time.time()
+    _t_start = received_at
+    # 本路徑不經 dispatch，須自行開啟計時收集器讓 generate_recommendations 累積
+    records = timing.begin_collection()
     print(f"{CYAN}[TIMER] 開始處理位置訊息: ({lat}, {lng}){RESET}")
     try:
         results, nearest_km = filter_by_location(lat, lng)
@@ -293,6 +310,10 @@ def _reply_location(lat: float, lng: float, user_id: str) -> None:
             )
         except Exception as reply_err:
             print(f"{RED}ERROR: push_message 失敗（確認使用者是否加好友）: {reply_err}{RESET}")
+    finally:
+        # 效能 KPI：webhook 收到 → 回覆推播完成的端到端耗時 + 推薦文 LLM 明細
+        kpi = timing.snapshot(records, time.time() - _t_start)
+        print(f"{GREEN}[KPI][webhook] {timing.format_kpi(kpi)}{RESET}")
 
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
@@ -307,6 +328,7 @@ def handle_message(event: MessageEvent) -> None:
     僅處理一對一私聊（source.type == "user"），群組/多人聊天室訊息直接忽略；
     並以 message.id 去重，避免 LINE webhook 重送觸發重複的 Gemini 呼叫。
     """
+    received_at = time.time()
     if event.source.type != "user":
         print(f"{YELLOW}STEP: 來源非一對一私聊（{event.source.type}），忽略此訊息{RESET}")
         return
@@ -321,7 +343,7 @@ def handle_message(event: MessageEvent) -> None:
     ).strftime("%Y-%m-%d %H:%M")
     thread = threading.Thread(
         target=_reply_to_line,
-        args=(user_text, user_id, current_time),
+        args=(user_text, user_id, current_time, received_at),
         daemon=True,
     )
     thread.start()
@@ -334,6 +356,7 @@ def handle_location(event: MessageEvent) -> None:
 
     沿用 handle_message 的兩道防護：僅處理一對一私聊、並以 message.id 去重。
     """
+    received_at = time.time()
     if event.source.type != "user":
         print(f"{YELLOW}STEP: 來源非一對一私聊（{event.source.type}），忽略此位置訊息{RESET}")
         return
@@ -346,7 +369,7 @@ def handle_location(event: MessageEvent) -> None:
     lng = event.message.longitude
     thread = threading.Thread(
         target=_reply_location,
-        args=(lat, lng, user_id),
+        args=(lat, lng, user_id, received_at),
         daemon=True,
     )
     thread.start()

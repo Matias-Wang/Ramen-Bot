@@ -25,6 +25,9 @@ PENDING.md
 dta_pipline.py
 data/
 
+# 雲端同步的隱私日誌（含 user_id / 對話內容，不進版控）
+data_logs/
+
 # 審查
 review/
 

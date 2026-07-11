@@ -13,6 +13,7 @@ from google.genai import types
 from core.prompts import INFO_SUMMARY_PROMPT, RECOMMEND_PROMPT
 from services.google_maps import GoogleMapsService
 from core.usage_tracker import check_and_increment, record_tokens
+from core import timing
 
 # <使用者自訂變數>
 RED = "\033[91m"
@@ -256,6 +257,38 @@ def is_open_at(opening_hours: Optional[Dict[str, Any]], dt: datetime) -> bool:
     return False
 
 
+def _dedupe_by_place_id(shops: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    以 place_id 去除重複店家，保留每組第一筆，維持原始順序。
+
+    ramen_data.json 部分店家因 IG 貼文逐則匯入，同一實體店家（同 place_id）
+    存在多筆內容不一致的紀錄（例如描述長度不同、店名一者標「暫停營業」
+    一者未標）。去重僅用於避免同一家店在單次搜尋結果中被抽中兩次，
+    不修改快取或原始資料，也不對「哪筆內容才正確」做判斷——距離排序後
+    呼叫可讓「最近的一筆」勝出，其餘情境則保留 JSON 中最先出現的一筆。
+    place_id 缺失時退回以 name 去重（防呆；目前資料全數有 place_id）。
+
+    Parameters
+    ----------
+    shops : List[Dict[str, Any]]
+        候選店家清單（可能包含同 place_id 的重複項）。
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        去重後的店家清單，保留輸入順序。
+    """
+    seen: set = set()
+    deduped = []
+    for shop in shops:
+        key = shop.get("place_id") or shop.get("name")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(shop)
+    return deduped
+
+
 def filter_by_location(
     lat: float,
     lng: float,
@@ -326,6 +359,7 @@ def filter_by_location(
             within_radius.append(shop)
 
     within_radius.sort(key=lambda x: x.get("distance_km", 999))
+    within_radius = _dedupe_by_place_id(within_radius)
     results = within_radius[:3]
 
     print(f"{GREEN}STEP: 定位推薦完成，半徑內 {len(within_radius)} 間，回傳 {len(results)} 間{RESET}")
@@ -476,12 +510,110 @@ def filter_ramen_data(
     if any("distance_km" in s for s in filtered_results):
         filtered_results.sort(key=lambda x: x.get("distance_km", 999))
 
+    # 去除同 place_id 的重複店家，避免同一家店在結果中出現兩次
+    filtered_results = _dedupe_by_place_id(filtered_results)
+
     # 隨機抽選最多 3 筆回傳，避免每次結果順序固定
     if len(filtered_results) > 3:
         filtered_results = random.sample(filtered_results, 3)
 
     print(f"{GREEN}STEP: 篩選完成，共找到 {len(filtered_results)} 間店家{RESET}")
     return filtered_results
+
+
+# --- AI 摘要欄位持久化 ---
+
+
+def _summary_source(shop: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    建構供 AI 摘要使用的店家資料視圖，排除查詢期暫存的 distance_km。
+
+    distance_km 由 filter_ramen_data / filter_by_location 依「當次查詢」寫入，
+    若被納入摘要並快取，會讓 search_ai_summary 綁定特定距離而失去查詢無關性。
+
+    Parameters
+    ----------
+    shop : Dict[str, Any]
+        店家資料字典。
+
+    Returns
+    -------
+    Dict[str, Any]
+        不含 distance_km 的店家資料（無此欄位時直接回傳原 dict）。
+    """
+    if "distance_km" not in shop:
+        return shop
+    return {k: v for k, v in shop.items() if k != "distance_km"}
+
+
+def _update_cache_field(shop_id: Any, name: str, field: str, value: str) -> None:
+    """
+    更新模組層級店家快取中對應店家的單一欄位。
+
+    讓同一 TTL 窗內的後續請求可直接命中快取欄位，不必再次呼叫 LLM。
+
+    Parameters
+    ----------
+    shop_id : Any
+        店家 id（優先比對）。
+    name : str
+        店家名稱（id 不符時的後備比對鍵）。
+    field : str
+        欲更新的欄位名稱。
+    value : str
+        欲寫入的內容。
+    """
+    for _s in _shops_cache:
+        if (shop_id and _s.get("id") == shop_id) or _s.get("name") == name:
+            _s[field] = value
+            break
+
+
+def persist_shop_summary(shop: Dict[str, Any], field: str, value: str) -> None:
+    """
+    將單一店家的 AI 摘要欄位寫回資料源，並同步更新模組層級快取。
+
+    僅寫入指定的單一欄位（Firestore merge / 本地更新對應 key），不寫整包 shop
+    dict，以免 distance_km 等查詢期暫存欄位汙染持久化資料。value 為空字串時
+    （LLM 生成失敗）不寫入，保留下次重試機會。
+
+    Parameters
+    ----------
+    shop : Dict[str, Any]
+        店家資料字典（可能為查詢期的淺複製）。
+    field : str
+        欲寫入的欄位名稱（search_ai_summary 或 info_ai_summary）。
+    value : str
+        欲寫入的內容。
+    """
+    if not value:
+        return
+
+    name = shop.get("name") or ""
+    shop_id = shop.get("id")
+    _update_cache_field(shop_id, name, field, value)
+
+    try:
+        if USE_FIRESTORE:
+            from services.firestore_client import get_db
+
+            db = get_db()
+            doc_id = str(shop_id or name or "unknown").strip().replace("/", "_")
+            db.collection("ramen_shops").document(doc_id).set(
+                {field: value}, merge=True
+            )
+        else:
+            data_path = os.path.join("data", "ramen_data.json")
+            with open(data_path, "r", encoding="utf-8") as f:
+                all_shops = json.load(f)
+            for _s in all_shops:
+                if (shop_id and _s.get("id") == shop_id) or _s.get("name") == name:
+                    _s[field] = value
+                    break
+            with open(data_path, "w", encoding="utf-8") as f:
+                json.dump(all_shops, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"{RED}STEP ERROR: 寫回 {field} 失敗: {e}{RESET}")
 
 
 # --- AI 推薦文生成邏輯 ---
@@ -589,24 +721,65 @@ def generate_recommendations(
         return []
 
     selected = shops_info[:num_shops]
+    results: List[Optional[str]] = [None] * len(selected)
+
+    # 先讀取快取欄位，僅對缺少 search_ai_summary 的店家呼叫 LLM
+    pending: List[tuple[int, Dict[str, Any]]] = []
+    for i, s in enumerate(selected):
+        cached = (s.get("search_ai_summary") or "").strip()
+        if cached:
+            results[i] = cached
+        else:
+            pending.append((i, s))
+
+    if not pending:
+        print(f"{GREEN}STEP: 推薦文全部命中 search_ai_summary 快取（{len(selected)} 筆），略過 LLM{RESET}")
+        return [r or "" for r in results]
+
     # 使用預熱 pool；若 pool 未初始化則 fallback 至主 client
     clients = (
-        _rec_client_pool[:len(selected)]
-        if len(_rec_client_pool) >= len(selected)
-        else [client] * len(selected)
+        _rec_client_pool[:len(pending)]
+        if len(_rec_client_pool) >= len(pending)
+        else [client] * len(pending)
     )
 
-    print(f"{GREEN}STEP: 開始並行生成 {len(selected)} 筆推薦文（Pool Client × ThreadPool）{RESET}")
+    print(f"{GREEN}STEP: {len(pending)}/{len(selected)} 筆需生成推薦文（其餘命中快取），"
+          f"Pool Client × ThreadPool 並行{RESET}")
+
+    # 於父執行緒取得計時收集器；worker 執行緒不繼承 contextvars，故顯式傳入
+    recs = timing.current_records()
+
+    def _timed_rec(name: str, shop_summary: str, rec_client: Any) -> str:
+        """在 worker 執行緒內計時單筆推薦文 LLM 呼叫，並記錄至父收集器。"""
+        _t = time.time()
+        text = _get_recommendation_threaded(shop_summary, rec_client, model_name)
+        timing.record(name, time.time() - _t, records=recs)
+        return text
+
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(pending)) as executor:
             futures = [
-                executor.submit(_get_recommendation_threaded, build_shop_summary(s), c, model_name)
-                for s, c in zip(selected, clients)
+                (
+                    idx,
+                    shop,
+                    executor.submit(
+                        _timed_rec,
+                        f"rec[{idx}]",
+                        build_shop_summary(_summary_source(shop)),
+                        c,
+                    ),
+                )
+                for (idx, shop), c in zip(pending, clients)
             ]
-            return [f.result(timeout=30) for f in futures]
+            for idx, shop, future in futures:
+                text = future.result(timeout=30)
+                results[idx] = text
+                # 生成成功才寫回（persist 內部對空字串 no-op），供下次查詢重用
+                persist_shop_summary(shop, "search_ai_summary", text)
     except Exception as e:
         print(f"{RED}STEP ERROR: 推薦文並行流程失敗: {e}{RESET}")
-        return [""] * len(selected)
+
+    return [r or "" for r in results]
 
 
 def summarize_description(shop: Dict[str, Any], client: Any, model_name: str) -> str:
@@ -631,28 +804,38 @@ def summarize_description(shop: Dict[str, Any], client: Any, model_name: str) ->
         摘要文字，失敗時回傳空字串（由呼叫端回退至原始 description）。
     """
     default = ""
+
+    # 先讀取快取欄位；命中則直接回傳，不呼叫 LLM
+    cached = (shop.get("info_ai_summary") or "").strip()
+    if cached:
+        print(f"{GREEN}STEP: 命中 info_ai_summary 快取，略過 LLM{RESET}")
+        return cached
+
     try:
         if not check_and_increment("llm_gemini"):
             return default
-        shop_summary = build_shop_summary(shop)
+        shop_summary = build_shop_summary(_summary_source(shop))
         prompt = INFO_SUMMARY_PROMPT.format(shop_summary=shop_summary)
         # 同 _get_recommendation_threaded：關閉 thinking，避免 thinking tokens
         # 吃光 max_output_tokens 預算導致介紹文被硬切斷。
-        result = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.6,
-                max_output_tokens=600,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-            ),
-        )
+        with timing.time_llm("info_summary"):
+            result = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.6,
+                    max_output_tokens=600,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                ),
+            )
         if result.usage_metadata:
             record_tokens(result.usage_metadata.total_token_count or 0)
         raw = result.text.strip()
         raw = re.sub(r"```\w*\s*", "", raw).strip()
         if not raw or any(c in raw for c in ["I will", "As an AI"]):
             return default
+        # 生成成功才寫回，供下次查詢重用
+        persist_shop_summary(shop, "info_ai_summary", raw)
         return raw
     except Exception as e:
         print(f"{RED}STEP ERROR: 摘要店家描述失敗: {e}{RESET}")

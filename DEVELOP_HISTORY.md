@@ -400,3 +400,34 @@
 - 真實 Gemini API：新欄位正確解析，一般查詢無回歸。
 - 待後續營運：分 2 天執行 `--update-hours` 回填營業時間並 sync Firestore；LocationMessage 待 LINE 實機測試。
 
+---
+
+## 2026-07-07 — 自動化優化管線階段一+二：雲端對話埋點與地端同步
+
+### 新增
+- **對話特徵埋點**：`core/conversation_logger.py` 新增 `log_conversation(user_input, intent, intent_data)`，
+  於 `DATA_BACKEND=firestore`（雲端）時以 fire-and-forget daemon thread 非同步寫入 Firestore
+  `conversation_logs` collection；本地終端模式 no-op（無真實使用者）。紀錄 schema
+  `{timestamp（台北時間）, user_input, predicted_skill, args}`，`predicted_skill` 由 intent 映射
+  為可讀 skill 名（`SEARCH_BY_CRITERIA→Search_skill` 等），`args` 為意圖字典去除 `intent`/`ui_tag`。
+- **地端同步腳本**：`scripts/fetch_cloud_data.py` 一鍵把雲端數據覆寫回 `data_logs/`：
+  `feedback_reports` → `tracking_feedbacks.json`（JSON Array，映射為 `{timestamp, user_id, feedback_text}`）、
+  `conversation_logs` → `tracking_conversations.jsonl`（每行一筆 JSON），供 Claude Code 分析分類錯誤、
+  盤點資料盲區。
+
+### 修改
+- `core/agent_router.py`：`_dispatch_inner` 成功解析意圖並執行完 STEP 3 後、回傳前呼叫
+  `log_conversation`（STEP 1 例外的 FALLBACK 路徑不埋點，因意圖未成立）。
+- `.gitignore` / `.dockerignore`：排除 `data_logs/`（含 user_id 與對話內容的隱私日誌，不進版控 / 不打包進容器）。
+
+### 設計決策
+- 沿用既有 `feedback_reports` collection，不新開計畫初稿提到的 `feedbacks`：feedback skill 已在
+  prod 寫入該集合、`check_pending_reports` 依賴它，改名會遺失既有待處理回報且無實益。
+
+### 驗證
+- `python -m pytest -q`：118 個測試全數通過（埋點在預設 local 模式為 no-op，不影響既有測試）。
+- mock Firestore（`DATA_BACKEND=firestore`）驗證埋點 record 與示範檔 schema 完全一致
+  （collection=`conversation_logs`，正確排除 `intent`/`ui_tag`）。
+- 待真實環境：對真實 Firestore 執行 `fetch_cloud_data.py`；部署後於 LINE 實際對話確認
+  `conversation_logs` 正確累積（review/review_20260707_2242.md）。
+

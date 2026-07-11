@@ -19,6 +19,7 @@ tests/
 # 本地資料層（Cloud Run 使用 Firestore，不需要這些）
 data/
 log/
+data_logs/
 knowledge/.chroma_db/
 
 # 其他開發用暫存

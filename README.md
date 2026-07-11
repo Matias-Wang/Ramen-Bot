@@ -56,6 +56,7 @@
 - ✅ LINE 位置訊息（`LocationMessage`）定位推薦：分享 GPS 位置即以 Haversine 找最近 ≤3 間（預設 5km），找不到時告知搜尋範圍與最近距離
 - ✅ 「現在有開」查詢：依店家營業時間（Places `regularOpeningHours`）過濾當下營業中的店家
 - ✅ 指定搜尋範圍：文字提到「方圓 N 公里」時覆寫預設半徑
+- ✅ 對話特徵埋點：雲端非同步記錄每筆意圖分類至 Firestore `conversation_logs`，供地端分析與 Prompt 調校
 
 ---
 
@@ -64,6 +65,7 @@
 - **RAG 知識庫**：ChromaDB 本地向量索引 + Google Embedding API，支援拉麵流派、禮儀等百科問答
 - **資料 Pipeline**：`scripts/build_new_shops.py` 自動化從 IG 官方匯出包（`data/resource/`）→ LLM 提取 → Maps 驗證 → 候選 JSON 輸出，再以 `scripts/append_new_shops.py` 合併進主資料庫
 - **資料校驗**：`scripts/update_api_data.py` 批次補全 API 資料（place_id、評分、照片）
+- **優化管線**：雲端埋點對話特徵至 Firestore，`scripts/fetch_cloud_data.py` 一鍵同步回地端 `data_logs/`，供 Claude Code 分析分類錯誤與盤點資料盲區
 - **資料儲存**：本地 JSON 檔案作為主資料庫，支援 TTL 快取回寫
 
 ---
@@ -93,6 +95,7 @@ Ramen-Bot/
 │   ├── agent_router.py     # [CORE] 意圖分發大腦（含全局 Fallback）
 │   ├── flex_handler.py     # [CORE] UI 渲染引擎
 │   ├── prompts.py          # LLM Prompt 存放處
+│   ├── conversation_logger.py  # 對話特徵埋點（雲端 conversation_logs）
 │   └── usage_tracker.py    # 每日配額檢查與 token 追蹤
 ├── skills/
 │   ├── Search_skill.py     # [SKILL 1] 條件搜尋

@@ -7,6 +7,7 @@ from google.genai import types
 
 from core.prompts import KNOWLEDGE_ANSWER_PROMPT
 from core.usage_tracker import check_and_increment, record_tokens
+from core import timing
 
 RED = "\033[91m"
 YELLOW = "\033[93m"
@@ -209,10 +210,11 @@ class KnowledgeSkill:
                 return "LLM 每日使用上限已達，請明天再試。"
 
             prompt = KNOWLEDGE_ANSWER_PROMPT.format(context=context, query=query)
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-            )
+            with timing.time_llm("knowledge"):
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                )
             if response.usage_metadata:
                 record_tokens(response.usage_metadata.total_token_count or 0)
 
@@ -266,10 +268,11 @@ class KnowledgeSkill:
                 return "LLM 每日使用上限已達，請明天再試。"
 
             prompt = KNOWLEDGE_ANSWER_PROMPT.format(context=context, query=query)
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-            )
+            with timing.time_llm("knowledge"):
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                )
             if response.usage_metadata:
                 record_tokens(response.usage_metadata.total_token_count or 0)
 

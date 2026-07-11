@@ -16,6 +16,8 @@ from skills.info_skill import InfoSkill
 from skills.knowledge_skill import KnowledgeSkill
 from core.prompts import IDENTIFY_INSTRUCTION_PROMPT
 from core.usage_tracker import check_and_increment, record_tokens
+from core.conversation_logger import log_conversation
+from core import timing
 
 RED = '\033[91m'
 GREEN = '\033[92m'
@@ -125,11 +127,17 @@ class AgentRouter:
             包含 intent、data、recommendations、ui_tag、message 的結果字典。
             若所有步驟均失敗則回傳 FALLBACK intent。
         """
+        records = timing.begin_collection()
+        _t0 = time.time()
         try:
-            return self._dispatch_inner(user_text, current_time)
+            result = self._dispatch_inner(user_text, current_time)
         except Exception as e:
             print(f"{RED}DISPATCH CRITICAL ERROR: {e}{RESET}")
-            return self._fallback_result()
+            result = self._fallback_result()
+        # 效能 KPI：附上各 LLM 呼叫與 dispatch 端到端耗時，供上層與驗證報告取用
+        result["timing"] = timing.snapshot(records, time.time() - _t0)
+        print(f"{CYAN}[KPI][dispatch] {timing.format_kpi(result['timing'])}{RESET}")
+        return result
 
     def _dispatch_inner(self, user_text: str, current_time: str | None = None) -> dict:
         """dispatch 的核心邏輯，由頂層 try/except 包覆。"""
@@ -143,13 +151,14 @@ class AgentRouter:
             contents = (
                 f"[目前時間：{current_time}]\n{user_text}" if current_time else user_text
             )
-            model_result = self.client.models.generate_content(
-                model=self.model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=IDENTIFY_INSTRUCTION_PROMPT,
-                ),
-            )
+            with timing.time_llm("intent"):
+                model_result = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=IDENTIFY_INSTRUCTION_PROMPT,
+                    ),
+                )
             if model_result.usage_metadata:
                 record_tokens(model_result.usage_metadata.total_token_count or 0)
             intent_data = self._parse_intent_json(model_result)
@@ -224,6 +233,9 @@ class AgentRouter:
             print(f"{RED}STEP 3 ERROR:{e}{RESET}")
         print(f"{CYAN}[TIMER] STEP 3 完成，耗時 {time.time() - _t3:.1f}s，"
               f"dispatch 總耗時 {time.time() - _t0:.1f}s{RESET}")
+
+        # 對話特徵埋點：非同步寫入雲端 conversation_logs（本地模式 no-op）
+        log_conversation(user_text, intent, intent_data)
 
         return {
             "intent": intent,
