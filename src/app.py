@@ -24,7 +24,11 @@ from dotenv import load_dotenv
 from core.agent_router import AgentRouter
 from core.flex_handler import assemble_carousel, get_flex_bubble
 from core import timing
-from skills.Search_skill import filter_by_location, generate_recommendations
+from skills.Search_skill import (
+    filter_by_location,
+    generate_recommendations,
+    resolve_shop_images,
+)
 from core.message_dedup import is_duplicate_message
 from core.usage_tracker import check_and_increment
 from skills.feedback_skill import collect_report, check_pending_reports
@@ -155,7 +159,7 @@ def _reply_to_line(
         print(f"{CYAN}[TIMER] dispatch 完成，耗時 {time.time() - _t_start:.1f}s{RESET}")
 
         intent = result.get('intent')
-        data = result.get('data', [])
+        data = resolve_shop_images(result.get('data', []))
         recommendations = result.get('recommendations', [])
         ui_tag = result.get('ui_tag')
 
@@ -297,6 +301,7 @@ def _reply_location(
         recommendations = generate_recommendations(
             results, router.client, router.model_name, num_shops=len(results)
         )
+        results = resolve_shop_images(results)
         carousel_contents = assemble_carousel(results, recommendations)
         flex = FlexSendMessage(alt_text="附近的拉麵推薦", contents=carousel_contents)
         check_and_increment("line_api")
@@ -393,6 +398,7 @@ if __name__ == "__main__":
 
             print(f"{GREEN}STEP 2: 執行對應 Skill 並獲取資料 (Intent: {res['intent']})...{RESET}")
             print(f"  - 找到店家數量: {len(res.get('data', []))}")
+            res['data'] = resolve_shop_images(res.get('data') or [])
 
             if res.get('recommendations'):
                 print(f"{GREEN}STEP 3: 正在生成 AI 推薦文案...{RESET}")

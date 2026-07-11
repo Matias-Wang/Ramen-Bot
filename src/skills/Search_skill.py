@@ -2,14 +2,18 @@ import concurrent.futures
 import copy
 import json
 import os
+import threading
 import time
 import re
 import math
 import random
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+
+import requests
 from google import genai
 from google.genai import types
+
 from core.prompts import INFO_SUMMARY_PROMPT, RECOMMEND_PROMPT
 from services.google_maps import GoogleMapsService
 from core.usage_tracker import check_and_increment, record_tokens
@@ -120,6 +124,97 @@ def _load_all_shops() -> List[Dict[str, Any]]:
             return []
 
     return _shops_cache
+
+
+def _is_image_url_alive(url: str, timeout: float = 3.0) -> bool:
+    """
+    對圖片網址發 HEAD request，確認是否仍可載入。
+
+    Google Places API 回傳的 photoUri 是有時效性的簽章網址，過期後仍是合法
+    的 https 格式，但實際請求會回 403，僅靠字串判斷無法得知是否已失效。
+
+    Parameters
+    ----------
+    url : str
+        要檢查的圖片網址。
+    timeout : float
+        逾時秒數，預設 3 秒（此檢查在使用者等待回覆的路徑上執行，須夠快）。
+
+    Returns
+    -------
+    bool
+        HTTP 狀態碼為 200 回傳 True；逾時、連線失敗或非 200 一律視為失效。
+    """
+    try:
+        resp = requests.head(url, timeout=timeout, allow_redirects=True)
+        return resp.status_code == 200
+    except requests.RequestException:
+        return False
+
+
+def _refresh_shop_image(shop: Dict[str, Any]) -> None:
+    """
+    背景執行緒：重新呼叫 Google Places API 取得新的照片網址並寫回資料源。
+
+    Fire-and-forget，任何失敗都只印出錯誤、不拋出，不影響已送出給使用者的回覆。
+
+    Parameters
+    ----------
+    shop : Dict[str, Any]
+        圖片網址已過期的店家資料字典（需含 place_id 才能查詢）。
+    """
+    place_id = shop.get("place_id")
+    name = shop.get("name") or "未知店名"
+    if not place_id:
+        return
+    try:
+        new_url = _get_gmaps().get_photo_by_place_id(place_id)
+    except Exception as e:
+        print(f"{RED}STEP ERROR: 背景重新取得 {name} 圖片失敗: {e}{RESET}")
+        return
+    if not new_url:
+        print(f"{YELLOW}STEP: 背景查無 {name} 的新照片{RESET}")
+        return
+    persist_shop_summary(shop, "image_url", new_url)
+    print(f"{GREEN}STEP: 已在背景修復 {name} 的圖片網址{RESET}")
+
+
+def resolve_shop_images(shops: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    在組裝 Flex Message 前，平行檢查店家圖片網址是否仍存活，過期的先退回
+    預設圖並在背景修復，避免使用者看到空白圖片。
+
+    Parameters
+    ----------
+    shops : List[Dict[str, Any]]
+        即將顯示給使用者的店家清單（通常 ≤3 筆，回覆前的最後一步呼叫）。
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        淺複製後的店家清單；過期的 image_url 已置換為 None，讓
+        flex_handler 既有的 fallback 邏輯自動改用預設拉麵圖。
+    """
+    if not shops:
+        return shops
+
+    urls = [s.get("image_url") for s in shops]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(shops)) as ex:
+        alive_flags = list(
+            ex.map(lambda u: _is_image_url_alive(u) if u else True, urls)
+        )
+
+    resolved = []
+    for shop, url, alive in zip(shops, urls, alive_flags):
+        shop_copy = copy.copy(shop)
+        if url and not alive:
+            print(f"{YELLOW}STEP: {shop.get('name')} 圖片網址已過期，暫用預設圖{RESET}")
+            shop_copy["image_url"] = None
+            threading.Thread(
+                target=_refresh_shop_image, args=(shop,), daemon=True
+            ).start()
+        resolved.append(shop_copy)
+    return resolved
 
 
 def _get_latlng_cached(location: str) -> Optional[Dict[str, float]]:

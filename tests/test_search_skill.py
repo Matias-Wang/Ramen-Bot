@@ -3,9 +3,11 @@
 涵蓋：Haversine 距離計算、店家摘要建構。
 """
 
+import threading
 from datetime import datetime
 
 import pytest
+import requests
 import skills.Search_skill as search_skill
 from skills.Search_skill import (
     calculate_distance,
@@ -14,6 +16,7 @@ from skills.Search_skill import (
     filter_ramen_data,
     filter_by_location,
     is_open_at,
+    resolve_shop_images,
 )
 
 
@@ -482,3 +485,133 @@ class TestFilterRamenDataOpenNow:
         result = filter_ramen_data({"location": "中山區"}, current_time=self._MON_NOON)
         ids = [s["id"] for s in result]
         assert set(ids) == {"shop_open", "shop_shut", "shop_no_hours"}
+
+
+# ─── _is_image_url_alive / resolve_shop_images ─────────────────────────────────
+# 注意：resolve_shop_images 對過期圖片會另開真實背景執行緒呼叫 _refresh_shop_image，
+# 故不monkeypatch threading.Thread 本身（ThreadPoolExecutor 內部也用同一個
+# threading 模組，patch 類別會連帶弄壞平行 HEAD 檢查），改用 threading.Event
+# 等待背景執行緒完成，斷言其副作用。
+
+class _FakeResponse:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+class TestIsImageUrlAlive:
+    def test_200_is_alive(self, monkeypatch):
+        monkeypatch.setattr(
+            search_skill.requests, "head", lambda *a, **k: _FakeResponse(200)
+        )
+        assert search_skill._is_image_url_alive("https://example.com/a.jpg") is True
+
+    def test_403_is_dead(self, monkeypatch):
+        monkeypatch.setattr(
+            search_skill.requests, "head", lambda *a, **k: _FakeResponse(403)
+        )
+        assert search_skill._is_image_url_alive("https://example.com/a.jpg") is False
+
+    def test_request_exception_is_dead(self, monkeypatch):
+        def _raise(*a, **k):
+            raise requests.RequestException("boom")
+
+        monkeypatch.setattr(search_skill.requests, "head", _raise)
+        assert search_skill._is_image_url_alive("https://example.com/a.jpg") is False
+
+
+class TestResolveShopImages:
+    def test_empty_list_returns_as_is(self):
+        assert resolve_shop_images([]) == []
+
+    def test_alive_image_kept_and_no_refresh_triggered(self, monkeypatch):
+        monkeypatch.setattr(search_skill, "_is_image_url_alive", lambda url: True)
+        refresh_calls = []
+        monkeypatch.setattr(
+            search_skill, "_refresh_shop_image", lambda shop: refresh_calls.append(shop)
+        )
+
+        shop = {"id": "s1", "name": "活著的店", "image_url": "https://x/a.jpg"}
+        result = resolve_shop_images([shop])
+
+        assert result[0]["image_url"] == "https://x/a.jpg"
+        # 存活的圖片不該觸發背景修復；沒有背景執行緒可等，直接同步斷言即可
+        assert refresh_calls == []
+
+    def test_dead_image_replaced_with_none_and_refresh_triggered(self, monkeypatch):
+        monkeypatch.setattr(search_skill, "_is_image_url_alive", lambda url: False)
+        refresh_calls = []
+        done = threading.Event()
+
+        def _fake_refresh(shop):
+            refresh_calls.append(shop)
+            done.set()
+
+        monkeypatch.setattr(search_skill, "_refresh_shop_image", _fake_refresh)
+
+        shop = {"id": "s2", "name": "過期的店", "image_url": "https://x/dead.jpg"}
+        result = resolve_shop_images([shop])
+
+        assert result[0]["image_url"] is None
+        # 原始 dict 不受影響（淺複製保護快取）
+        assert shop["image_url"] == "https://x/dead.jpg"
+        assert done.wait(timeout=2.0), "背景修復執行緒逾時未執行"
+        assert len(refresh_calls) == 1
+        assert refresh_calls[0]["id"] == "s2"
+
+    def test_missing_image_url_not_treated_as_expired(self, monkeypatch):
+        """本來就沒有圖的店家，不應觸發背景修復（沒有網址可檢查/修復）。"""
+        monkeypatch.setattr(
+            search_skill, "_is_image_url_alive", lambda url: False
+        )
+        refresh_calls = []
+        monkeypatch.setattr(
+            search_skill, "_refresh_shop_image", lambda shop: refresh_calls.append(shop)
+        )
+
+        shop = {"id": "s3", "name": "無圖的店", "image_url": None}
+        result = resolve_shop_images([shop])
+
+        assert result[0]["image_url"] is None
+        # image_url 為 None 時不進入「過期」分支，不會啟動任何背景執行緒
+        assert refresh_calls == []
+
+
+class TestRefreshShopImage:
+    def test_no_place_id_skips_api_call(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(
+            search_skill, "persist_shop_summary", lambda *a, **k: called.append(a)
+        )
+        search_skill._refresh_shop_image({"name": "無 place_id 的店", "place_id": None})
+        assert called == []
+
+    def test_successful_refresh_persists_new_url(self, monkeypatch):
+        class _FakeGmaps:
+            def get_photo_by_place_id(self, place_id):
+                return "https://fresh.example.com/new.jpg"
+
+        monkeypatch.setattr(search_skill, "_get_gmaps", lambda: _FakeGmaps())
+        persisted = []
+        monkeypatch.setattr(
+            search_skill,
+            "persist_shop_summary",
+            lambda shop, field, value: persisted.append((shop["name"], field, value)),
+        )
+
+        shop = {"name": "過期店家", "place_id": "abc123"}
+        search_skill._refresh_shop_image(shop)
+
+        assert persisted == [("過期店家", "image_url", "https://fresh.example.com/new.jpg")]
+
+    def test_api_returns_none_does_not_persist(self, monkeypatch):
+        class _FakeGmaps:
+            def get_photo_by_place_id(self, place_id):
+                return None
+
+        monkeypatch.setattr(search_skill, "_get_gmaps", lambda: _FakeGmaps())
+        called = []
+        monkeypatch.setattr(
+            search_skill, "persist_shop_summary", lambda *a, **k: called.append(a)
+        )
+        search_skill._refresh_shop_image({"name": "查無照片的店", "place_id": "xyz"})
+        assert called == []
