@@ -507,15 +507,27 @@ def filter_ramen_data(
         filtered_results.append(shop)
 
     # 若有距離資訊，依距離排序
-    if any("distance_km" in s for s in filtered_results):
+    has_distance = any("distance_km" in s for s in filtered_results)
+    if has_distance:
         filtered_results.sort(key=lambda x: x.get("distance_km", 999))
 
     # 去除同 place_id 的重複店家，避免同一家店在結果中出現兩次
     filtered_results = _dedupe_by_place_id(filtered_results)
 
-    # 隨機抽選最多 3 筆回傳，避免每次結果順序固定
     if len(filtered_results) > 3:
-        filtered_results = random.sample(filtered_results, 3)
+        if has_distance:
+            # 有精確距離資訊（捷運站/地址等座標查詢）時，固定取最近 2 間，
+            # 第 3 間從次近的候選池中隨機挑選：確保結果貼近使用者指定地點，
+            # 同時保留少量多樣性，避免同一地點每次查詢結果完全相同。
+            NEARBY_POOL_SIZE = 6
+            top2 = filtered_results[:2]
+            pool = filtered_results[2:2 + NEARBY_POOL_SIZE]
+            third = [random.choice(pool)] if pool else []
+            filtered_results = top2 + third
+        else:
+            # 無距離資訊（純地區字串/口味比對）：維持原本全池隨機抽選，
+            # 避免每次結果順序固定。
+            filtered_results = random.sample(filtered_results, 3)
 
     print(f"{GREEN}STEP: 篩選完成，共找到 {len(filtered_results)} 間店家{RESET}")
     return filtered_results
