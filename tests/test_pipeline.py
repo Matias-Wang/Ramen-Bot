@@ -284,3 +284,60 @@ class TestDispatchFallback:
 
         assert result["intent"] == "FALLBACK"
         assert result["data"] == []
+
+
+class TestDispatchNearMeWithoutLocation:
+    """使用者以文字提及「附近」等鄰近語意，但 Gemini 未解析出實際地名（純文字訊息
+    無座標可用）時，不可讓 SEARCH_BY_CRITERIA 在 location 為空時當作「不限地區」
+    搜尋全部店家（會比對到與使用者所在地無關的店家，例如海外/外縣市記錄），
+    應提示使用者分享位置或補充明確地名，且不應呼叫 filter_ramen_data。"""
+
+    def test_near_me_without_resolvable_location_returns_fallback(
+        self, router, monkeypatch
+    ):
+        router.client.models.generate_content.return_value = _make_gemini_response({
+            "intent": "SEARCH_BY_CRITERIA",
+            "location": None,
+            "style": None,
+            "shop_name": None,
+            "query": None,
+            "ui_tag": "CAROUSEL",
+        })
+        called = []
+        monkeypatch.setattr(
+            "core.agent_router.filter_ramen_data",
+            lambda intent_data, current_time=None: called.append(intent_data),
+        )
+
+        result = router.dispatch("推薦我附近的拉麵")
+
+        assert result["intent"] == "FALLBACK"
+        assert result["data"] == []
+        assert result["recommendations"] == []
+        assert not called  # 不應落入「無地區條件 = 搜尋全部」的路徑
+
+    def test_near_me_with_resolvable_location_still_searches(
+        self, router, monkeypatch
+    ):
+        """「中山站附近」有明確地名，location 非空，應正常走 SEARCH_BY_CRITERIA。"""
+        router.client.models.generate_content.return_value = _make_gemini_response({
+            "intent": "SEARCH_BY_CRITERIA",
+            "location": "中山站",
+            "style": None,
+            "shop_name": None,
+            "query": None,
+            "ui_tag": "CAROUSEL",
+        })
+        monkeypatch.setattr(
+            "core.agent_router.filter_ramen_data",
+            lambda intent_data, current_time=None: [_SAMPLE_SHOP],
+        )
+        monkeypatch.setattr(
+            "core.agent_router.generate_recommendations",
+            lambda shops, client, model, num_shops: ["推薦文A"],
+        )
+
+        result = router.dispatch("中山站附近的拉麵")
+
+        assert result["intent"] == "SEARCH_BY_CRITERIA"
+        assert result["data"] == [_SAMPLE_SHOP]
