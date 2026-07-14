@@ -312,6 +312,7 @@ class TestDispatchNearMeWithoutLocation:
         result = router.dispatch("推薦我附近的拉麵")
 
         assert result["intent"] == "FALLBACK"
+        assert result["ui_tag"] == "LOCATION_REQUEST"
         assert result["data"] == []
         assert result["recommendations"] == []
         assert not called  # 不應落入「無地區條件 = 搜尋全部」的路徑

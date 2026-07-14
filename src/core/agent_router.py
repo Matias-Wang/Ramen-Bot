@@ -97,7 +97,10 @@ class AgentRouter:
         return json.loads(m.group(1).replace("'", '"'))
 
     @staticmethod
-    def _fallback_result(message: str = "系統發生未預期的錯誤，請稍後再試。") -> dict:
+    def _fallback_result(
+        message: str = "系統發生未預期的錯誤，請稍後再試。",
+        ui_tag: str = "TEXT",
+    ) -> dict:
         """
         回傳標準降級結果，供頂層例外捕捉使用。
 
@@ -105,6 +108,9 @@ class AgentRouter:
         ----------
         message : str
             顯示給使用者的錯誤提示。
+        ui_tag : str
+            回應 UI 型態，預設 "TEXT"；"LOCATION_REQUEST" 供 app.py 附加
+            LINE 位置分享 Quick Reply 按鈕使用。
 
         Returns
         -------
@@ -115,7 +121,7 @@ class AgentRouter:
             "intent": "FALLBACK",
             "data": [],
             "recommendations": [],
-            "ui_tag": "TEXT",
+            "ui_tag": ui_tag,
             "message": message,
         }
 
@@ -184,18 +190,21 @@ class AgentRouter:
 
         intent = intent_data.get('intent', 'SEARCH_BY_CRITERIA').upper()
 
-        # 「附近」語意但 Gemini 未解析出實際地名：純文字訊息無座標可用，不可讓
-        # SEARCH_BY_CRITERIA 在 location 為空時當作「不限地區」搜尋全部店家，
-        # 應提示使用者分享 LINE 位置或補充明確地區/捷運站名稱。
+        # 「附近」語意但 Gemini 未解析出實際地名：純文字訊息協定層級無座標可用
+        # （LINE TextMessage 事件不含經緯度，僅 LocationMessage 才有），不可讓
+        # SEARCH_BY_CRITERIA 在 location 為空時當作「不限地區」搜尋全部店家。
+        # 改回傳 LOCATION_REQUEST，由 app.py 附加 LINE 位置分享 Quick Reply
+        # 按鈕，使用者一鍵分享後會觸發 handle_location 走 filter_by_location()
+        # 真正以座標做 Haversine 過濾。
         if (
             intent == "SEARCH_BY_CRITERIA"
             and not intent_data.get("location")
             and _NEAR_ME_PATTERN.search(user_text)
         ):
-            print(f"{YELLOW}STEP: 偵測到「附近」語意但無可解析地名，提示使用者分享位置{RESET}")
+            print(f"{YELLOW}STEP: 偵測到「附近」語意但無可解析地名，請使用者分享位置{RESET}")
             return self._fallback_result(
-                "請點選左下角「+」分享您的目前位置，我會直接找出附近的拉麵店；"
-                "也可以直接告訴我明確的地區或捷運站名稱（例如「南港」、「中山站附近」）。"
+                "請分享您的目前位置，我幫您找附近的拉麵店！",
+                ui_tag="LOCATION_REQUEST",
             )
 
         # --- STEP 2: Skill 執行 ---
