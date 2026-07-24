@@ -17,6 +17,9 @@ from linebot.models import (
     LocationMessage,
     TextSendMessage,
     FlexSendMessage,
+    QuickReply,
+    QuickReplyButton,
+    LocationAction,
 )
 from dotenv import load_dotenv
 
@@ -167,13 +170,20 @@ def _reply_to_line(
         recommendations = result.get('recommendations', [])
         ui_tag = result.get('ui_tag')
 
-        # FALLBACK：dispatch 頂層捕捉到的嚴重錯誤
+        # FALLBACK：dispatch 頂層捕捉到的嚴重錯誤，或需要使用者分享位置
         if intent == 'FALLBACK':
             check_and_increment("line_api")
-            line_bot_api.push_message(
-                user_id,
-                TextSendMessage(text=result.get('message', '系統發生錯誤，請稍後再試。'))
+            text_message = TextSendMessage(
+                text=result.get('message', '系統發生錯誤，請稍後再試。')
             )
+            # LOCATION_REQUEST：使用者文字提及「附近」但無可解析地名（純文字
+            # 訊息本身無座標），附加 LINE 原生位置分享 Quick Reply，讓使用者
+            # 一鍵分享後觸發 handle_location 走真正的座標篩選。
+            if ui_tag == 'LOCATION_REQUEST':
+                text_message.quick_reply = QuickReply(items=[
+                    QuickReplyButton(action=LocationAction(label='分享位置'))
+                ])
+            line_bot_api.push_message(user_id, text_message)
             return
 
         # 錯誤回報收集
