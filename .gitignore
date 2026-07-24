@@ -38,3 +38,6 @@ knowledge/
 # IG session 檔案（含敏感 cookie）
 .ig_session_*
 
+# 規劃紀錄
+CR/
+

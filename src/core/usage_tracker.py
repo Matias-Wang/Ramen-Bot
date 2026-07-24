@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import time
 from datetime import date
 
@@ -15,6 +16,10 @@ LOG_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "log", "usage.json"
 )
 USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"
+
+# 本地模式（單機多執行緒）序列化 read-modify-write，避免並行漏加計數。
+# Firestore 模式改由 transaction 保證原子性，不使用此鎖。
+_LOCAL_LOCK = threading.Lock()
 
 
 def _default_data() -> dict:
@@ -73,9 +78,65 @@ def _reset_if_new_day(data: dict) -> dict:
     return data
 
 
+def _local_check_and_increment(key: str) -> "bool | None":
+    """本地模式：在 _LOCAL_LOCK 內完成 read-modify-write，避免並行漏加。
+
+    Returns
+    -------
+    bool or None
+        True 可繼續、False 已達上限、None 為未知鍵值。
+    """
+    with _LOCAL_LOCK:
+        data = _reset_if_new_day(_load())
+        entry = data.get(key)
+        if entry is None:
+            return None
+        if entry["count"] >= entry["limit"]:
+            return False
+        entry["count"] += 1
+        _save(data)
+        return True
+
+
+def _firestore_check_and_increment(key: str) -> "bool | None":
+    """Firestore 模式：以 transaction 原子完成讀-判斷-加，避免多副本並行漏加。
+
+    Returns
+    -------
+    bool or None
+        True 可繼續、False 已達上限、None 為未知鍵值。
+    """
+    from google.cloud import firestore
+
+    from services.firestore_client import get_db
+
+    db = get_db()
+    doc_ref = db.collection("config").document("daily_usage")
+
+    @firestore.transactional
+    def _txn(transaction: "firestore.Transaction") -> "bool | None":
+        snap = doc_ref.get(transaction=transaction)
+        data = _reset_if_new_day(snap.to_dict() if snap.exists else _default_data())
+        entry = data.get(key)
+        if entry is None:
+            return None
+        if entry["count"] >= entry["limit"]:
+            # 跨日會由 _reset_if_new_day 歸零而不進本分支，故此處必為同日已達上限、
+            # data 未變動，無需寫回（避免尖峰時的冗餘寫入）。
+            return False
+        entry["count"] += 1
+        transaction.set(doc_ref, data)
+        return True
+
+    return _txn(db.transaction())
+
+
 def check_and_increment(key: str) -> bool:
     """
     檢查指定 API 是否仍在每日配額內，若是則計數 +1 並寫回。
+
+    本地模式以 threading.Lock、Firestore 模式以 transaction 保證整段
+    「讀-判斷-加」原子性，避免多執行緒/多副本並行下漏加計數而突破每日上限。
 
     Parameters
     ----------
@@ -94,28 +155,25 @@ def check_and_increment(key: str) -> bool:
     print(f"{GREEN}STEP: 檢查 {key} 使用配額{RESET}")
     _t0 = time.time()
     try:
-        data = _load()
-        data = _reset_if_new_day(data)
+        if USE_FIRESTORE:
+            result = _firestore_check_and_increment(key)
+        else:
+            result = _local_check_and_increment(key)
 
-        entry = data.get(key)
-        if entry is None:
+        if result is None:
             print(f"{RED}STEP ERROR: 未知的追蹤鍵值 '{key}'{RESET}")
             return False
-
-        if entry["count"] >= entry["limit"]:
-            print(f"{RED}STEP ERROR: {key} 已達每日上限 ({entry['limit']} 次){RESET}")
+        if result is False:
+            print(f"{RED}STEP ERROR: {key} 已達每日上限{RESET}")
             return False
-
-        entry["count"] += 1
-        _save(data)
         return True
     except Exception as e:
         # 追蹤本身失敗時不阻擋正常流程
         print(f"{RED}STEP ERROR: 使用量追蹤失敗: {e}{RESET}")
         return True
     finally:
-        # Firestore 模式下 _load/_save 各一次網路往返，先前未被 KPI 計時，
-        # 曾造成「LLM 3.11s」與「STEP 總耗時 6.3s」間出現~3.2s 不明缺口。
+        # Firestore 模式下 transaction 一次網路往返，納入 KPI 計時，
+        # 避免「LLM 耗時」與「STEP 總耗時」間出現不明缺口。
         timing.record(f"quota:{key}", time.time() - _t0)
 
 
@@ -133,10 +191,29 @@ def record_tokens(tokens: int) -> None:
 
     _t0 = time.time()
     try:
-        data = _load()
-        data = _reset_if_new_day(data)
-        data["llm_gemini"]["token_consumed"] += tokens
-        _save(data)
+        if USE_FIRESTORE:
+            from google.cloud import firestore
+
+            from services.firestore_client import get_db
+
+            db = get_db()
+            doc_ref = db.collection("config").document("daily_usage")
+
+            @firestore.transactional
+            def _txn(transaction: "firestore.Transaction") -> None:
+                snap = doc_ref.get(transaction=transaction)
+                data = _reset_if_new_day(
+                    snap.to_dict() if snap.exists else _default_data()
+                )
+                data["llm_gemini"]["token_consumed"] += tokens
+                transaction.set(doc_ref, data)
+
+            _txn(db.transaction())
+        else:
+            with _LOCAL_LOCK:
+                data = _reset_if_new_day(_load())
+                data["llm_gemini"]["token_consumed"] += tokens
+                _save(data)
     except Exception as e:
         print(f"{RED}STEP ERROR: Token 記錄失敗: {e}{RESET}")
     finally:

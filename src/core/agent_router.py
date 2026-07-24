@@ -24,6 +24,34 @@ GREEN = '\033[92m'
 CYAN = '\033[96m'
 RESET = '\033[0m'
 
+# 意圖解析結構化輸出 Schema：搭配 response_mime_type="application/json"，
+# 讓 Gemini 保證回傳合法 JSON，免除脆弱的字串修補（如全域替換單引號）。
+# 欄位定義對齊 prompts.IDENTIFY_INSTRUCTION_PROMPT 的輸出格式。
+INTENT_RESPONSE_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    required=["intent"],
+    properties={
+        "intent": types.Schema(
+            type=types.Type.STRING,
+            enum=[
+                "SEARCH_BY_CRITERIA",
+                "GET_SPECIFIC_INFO",
+                "KNOWLEDGE_QUERY",
+                "REPORT_ERROR",
+            ],
+        ),
+        "location": types.Schema(type=types.Type.STRING, nullable=True),
+        "style": types.Schema(type=types.Type.STRING, nullable=True),
+        "shop_name": types.Schema(type=types.Type.STRING, nullable=True),
+        "query": types.Schema(type=types.Type.STRING, nullable=True),
+        "radius_km": types.Schema(type=types.Type.NUMBER, nullable=True),
+        "open_now": types.Schema(type=types.Type.BOOLEAN, nullable=True),
+        "ui_tag": types.Schema(
+            type=types.Type.STRING, enum=["CAROUSEL", "TEXT"], nullable=True
+        ),
+    },
+)
+
 
 class AgentRouter:
     """
@@ -79,12 +107,20 @@ class AgentRouter:
         ValueError
             若無法從回應中抽出有效 JSON。
         """
-        raw = self._extract_text(response)
-        raw = re.sub(r'```(?:json)?', '', str(raw))
-        m = re.search(r'(\{.*\})', raw, re.S)
+        raw = str(self._extract_text(response)).strip()
+        # 結構化輸出（response_schema）保證回傳合法 JSON，優先直接解析。
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+        # 防禦性 fallback：萬一模型未遵循 schema（含 ``` 圍欄或前後贅字），
+        # 仍盡力抽取第一個 JSON 物件。不再做全域單引號替換，以免破壞含
+        # 單引號的合法值（如英文縮寫）。
+        cleaned = re.sub(r'```(?:json)?', '', raw)
+        m = re.search(r'(\{.*\})', cleaned, re.S)
         if not m:
             raise ValueError('無法從回應抽出 JSON，請檢查 Gemini 輸出格式。')
-        return json.loads(m.group(1).replace("'", '"'))
+        return json.loads(m.group(1))
 
     @staticmethod
     def _fallback_result(message: str = "系統發生未預期的錯誤，請稍後再試。") -> dict:
@@ -157,6 +193,8 @@ class AgentRouter:
                     contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=IDENTIFY_INSTRUCTION_PROMPT,
+                        response_mime_type="application/json",
+                        response_schema=INTENT_RESPONSE_SCHEMA,
                     ),
                 )
             if model_result.usage_metadata:
