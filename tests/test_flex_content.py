@@ -29,6 +29,10 @@ def real_shops() -> list[dict]:
     list[dict]
         完整店家清單。
     """
+    # data/ 於 .gitignore，CI 全新 checkout 無此檔；缺檔時略過真實資料驗證，
+    # 避免 deploy gate 因環境缺資料誤判失敗（核心邏輯測試仍照常把關）。
+    if not os.path.exists(RAMEN_DATA_PATH):
+        pytest.skip("data/ramen_data.json 不存在（CI 未含 gitignore 的資料檔），略過真實資料驗證")
     with open(RAMEN_DATA_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
