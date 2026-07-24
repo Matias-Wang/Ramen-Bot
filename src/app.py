@@ -124,7 +124,11 @@ def callback() -> str:
     """
     LINE Webhook 入口點。
     """
-    signature = request.headers['X-Line-Signature']
+    # 缺 X-Line-Signature（掃描器/畸形請求）時直接回 400，
+    # 避免 KeyError 造成 500 與錯誤日誌噪音。
+    signature = request.headers.get('X-Line-Signature')
+    if not signature:
+        abort(400)
     body = request.get_data(as_text=True)
     try:
         handler.handle(body, signature)
