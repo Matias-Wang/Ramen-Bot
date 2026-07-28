@@ -170,7 +170,11 @@ class InfoSkill:
             last_date = datetime.datetime.fromisoformat(
                 target_shop["last_updated"]
             )
-            if (datetime.datetime.now() - last_date).days > 7:
+            # last_updated 可能為 naive（本模組寫入）或 aware（feedback_skill 等
+            # 其他來源以 UTC 寫入）。以 last_date.tzinfo 建立對應的 now，確保兩者
+            # aware 性一致，避免 naive - aware 相減拋 TypeError。
+            now = datetime.datetime.now(last_date.tzinfo)
+            if (now - last_date).days > 7:
                 needs_update = True
         else:
             needs_update = True

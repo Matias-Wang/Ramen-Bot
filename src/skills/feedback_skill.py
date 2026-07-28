@@ -106,11 +106,13 @@ def check_pending_reports() -> list[dict]:
     print(f"{GREEN}STEP 1: 讀取待處理錯誤回報{RESET}")
     try:
         if USE_FIRESTORE:
+            from google.cloud.firestore_v1.base_query import FieldFilter
+
             from services.firestore_client import get_db
             db = get_db()
             docs = (
                 db.collection(FIRESTORE_COLLECTION)
-                .where("status", "==", "pending")
+                .where(filter=FieldFilter("status", "==", "pending"))
                 .stream()
             )
             pending = [doc.to_dict() for doc in docs]

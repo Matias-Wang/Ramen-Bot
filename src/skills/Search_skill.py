@@ -85,7 +85,10 @@ def init_rec_client_pool(api_key: str, model_name: str, pool_size: int = 3) -> N
 
 def _load_all_shops() -> List[Dict[str, Any]]:
     """
-    讀取全部店家資料，Firestore 結果快取 5 分鐘以減少 gRPC 呼叫次數。
+    讀取全部店家資料，Firestore 結果快取 24 小時（_CACHE_TTL_SECONDS）以減少
+    gRPC 呼叫次數。runtime 寫回（persist_shop_summary）會同步更新記憶體快取；
+    外部（migration/腳本）更新 Firestore 後，線上 worker 最長需一個 TTL 週期或
+    重啟才會看到，屬已知取捨。
 
     Returns
     -------
