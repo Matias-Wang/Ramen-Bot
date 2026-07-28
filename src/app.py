@@ -1,7 +1,6 @@
-# === 在檔案頂部定義開關 ===
+# === 執行模式開關（改由環境變數 LINE_TAG 控制，定義於 load_dotenv 之後）===
 # LINE_TAG = 1: 正式模式 (LINE + ngrok)
 # LINE_TAG = 0: 地端測試模式 (終端機輸出 + temp.json)
-LINE_TAG = 0
 
 # === imports ===
 import os
@@ -48,6 +47,9 @@ RESET = '\033[0m'
 
 # 載入環境變數 (.env)
 load_dotenv()
+
+# 執行模式：預設 0（地端測試）；正式部署以環境變數 LINE_TAG=1 覆寫。
+LINE_TAG = int(os.getenv("LINE_TAG", "0"))
 
 # 初始化 Flask App
 app = Flask(__name__)
