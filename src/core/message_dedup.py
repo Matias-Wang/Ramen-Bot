@@ -1,4 +1,5 @@
 import os
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 # <使用者自訂變數>
@@ -9,7 +10,10 @@ RESET = "\033[0m"
 USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"
 FIRESTORE_COLLECTION = "processed_message_ids"
 
-_seen_ids: set[str] = set()
+# 本地模式去重快取。以 OrderedDict 當有序集合並設上限，避免長時間運行時
+# 無限增長（生產模式走 Firestore + TTL，不使用此結構）。
+_MAX_SEEN_IDS = 10000
+_seen_ids: "OrderedDict[str, None]" = OrderedDict()
 
 
 def is_duplicate_message(message_id: str) -> bool:
@@ -43,5 +47,7 @@ def is_duplicate_message(message_id: str) -> bool:
         if message_id in _seen_ids:
             print(f"{GREEN}STEP: message_id={message_id} 為重複訊息，已跳過{RESET}")
             return True
-        _seen_ids.add(message_id)
+        _seen_ids[message_id] = None
+        if len(_seen_ids) > _MAX_SEEN_IDS:
+            _seen_ids.popitem(last=False)  # 淘汰最舊的一筆
         return False

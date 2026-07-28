@@ -37,7 +37,9 @@ class TestFindShopByName:
 def info_skill_instance(monkeypatch) -> InfoSkill:
     """建立 InfoSkill 實例，stub 掉 GoogleMapsService 與本地資料讀寫。"""
     monkeypatch.setattr(info_skill, "USE_FIRESTORE", False)
-    with patch.object(info_skill, "GoogleMapsService"):
+    # InfoSkill 現複用 Search_skill 的 GoogleMapsService 單例（_get_gmaps），
+    # 故 stub 該來源，讓建構出的 gmaps_service 為可注入的 MagicMock。
+    with patch("skills.Search_skill._get_gmaps", return_value=MagicMock()):
         skill = InfoSkill()
     monkeypatch.setattr(skill, "_load_data", lambda: [])
     monkeypatch.setattr(skill, "_save_one_shop", lambda shop: None)

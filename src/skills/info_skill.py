@@ -5,8 +5,6 @@ import json
 import os
 from typing import Optional
 
-from services.google_maps import GoogleMapsService
-
 # 模糊比對門檻：低於此相似度視為「查無此店」，避免誤配到不相關店家
 FUZZY_MATCH_THRESHOLD = 0.5
 # 地區相符時的額外加分，用於同名/相似名候選間的排序
@@ -72,7 +70,10 @@ class InfoSkill:
     """
 
     def __init__(self) -> None:
-        self.gmaps_service = GoogleMapsService()
+        # 複用 Search_skill 維護的 GoogleMapsService 單例，避免重複建立 client。
+        from skills.Search_skill import _get_gmaps
+
+        self.gmaps_service = _get_gmaps()
 
     def _load_data(self) -> list:
         """
