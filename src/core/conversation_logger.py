@@ -22,6 +22,10 @@ RESET = "\033[0m"
 FIRESTORE_COLLECTION = "conversation_logs"
 _TAIPEI_TZ = timezone(timedelta(hours=8))
 
+# 對話日誌含 user_id 情境的原始輸入，屬個資；保留 90 天後由 Firestore TTL
+# 自動清除（TTL policy 設在 expire_at 這個 Timestamp 欄位上）。
+_RETENTION_DAYS = 90
+
 # intent（AgentRouter 內部標籤）對應到 skill 名稱（地端分析用的可讀名稱）
 _INTENT_TO_SKILL = {
     "SEARCH_BY_CRITERIA": "Search_skill",
@@ -61,6 +65,8 @@ def log_conversation(user_input: str, intent: str, intent_data: dict) -> None:
         "user_input": user_input,
         "predicted_skill": _INTENT_TO_SKILL.get(intent, intent),
         "args": args,
+        # Firestore TTL 依此 Timestamp 欄位在到期後自動刪除本筆日誌（見 _RETENTION_DAYS）
+        "expire_at": datetime.now(timezone.utc) + timedelta(days=_RETENTION_DAYS),
     }
     thread = threading.Thread(
         target=_write_to_firestore, args=(record,), daemon=True
