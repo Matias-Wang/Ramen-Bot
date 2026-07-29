@@ -17,6 +17,7 @@ from google.genai import types
 from core.prompts import INFO_SUMMARY_PROMPT, RECOMMEND_PROMPT
 from services.google_maps import GoogleMapsService
 from core.usage_tracker import check_and_increment, record_tokens
+from core.llm_retry import generate_with_retry
 from core import timing
 
 # <使用者自訂變數>
@@ -783,14 +784,17 @@ def _get_recommendation_threaded(
         # gemini-2.5-flash 預設會先消耗 thinking tokens（實測單次最多 380+），
         # 常吃光 max_output_tokens 預算導致可見文字被硬切斷在句子中間；
         # 這類短文案不需要推理，故關閉 thinking。
-        result = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.6,
-                max_output_tokens=400,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
+        result = generate_with_retry(
+            lambda: client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.6,
+                    max_output_tokens=400,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                ),
             ),
+            label="推薦文",
         )
         if result.usage_metadata:
             record_tokens(result.usage_metadata.total_token_count or 0)
@@ -929,14 +933,17 @@ def summarize_description(shop: Dict[str, Any], client: Any, model_name: str) ->
         # 同 _get_recommendation_threaded：關閉 thinking，避免 thinking tokens
         # 吃光 max_output_tokens 預算導致介紹文被硬切斷。
         with timing.time_llm("info_summary"):
-            result = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.6,
-                    max_output_tokens=600,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+            result = generate_with_retry(
+                lambda: client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.6,
+                        max_output_tokens=600,
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    ),
                 ),
+                label="店家摘要",
             )
         if result.usage_metadata:
             record_tokens(result.usage_metadata.total_token_count or 0)
