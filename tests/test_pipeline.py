@@ -342,3 +342,64 @@ class TestDispatchNearMeWithoutLocation:
 
         assert result["intent"] == "SEARCH_BY_CRITERIA"
         assert result["data"] == [_SAMPLE_SHOP]
+
+
+# ─── STEP 1 暫時性錯誤重試 ─────────────────────────────────────────────────────
+
+class TestDispatchTransientRetry:
+    """Gemini 偶發 503（暫時性過載）時，STEP 1 意圖解析應重試而非立即回
+    FALLBACK「系統忙碌中」；重試用盡才降級。"""
+
+    def test_transient_error_then_success_retries(self, router, monkeypatch):
+        """首次 503、重試後成功，應正常解析出意圖，不落入 FALLBACK。"""
+        monkeypatch.setattr("core.agent_router.time.sleep", lambda s: None)
+        good = _make_gemini_response({
+            "intent": "SEARCH_BY_CRITERIA",
+            "location": "雙連站",
+            "style": None,
+            "shop_name": None,
+            "query": None,
+            "ui_tag": "CAROUSEL",
+        })
+        router.client.models.generate_content.side_effect = [
+            Exception("503 UNAVAILABLE. high demand"),
+            good,
+        ]
+        monkeypatch.setattr(
+            "core.agent_router.filter_ramen_data",
+            lambda intent_data, current_time=None: [_SAMPLE_SHOP],
+        )
+        monkeypatch.setattr(
+            "core.agent_router.generate_recommendations",
+            lambda shops, client, model, num_shops: ["推薦文A"],
+        )
+
+        result = router.dispatch("雙連站附近有推薦的拉麵嗎?")
+
+        assert result["intent"] == "SEARCH_BY_CRITERIA"
+        assert result["data"] == [_SAMPLE_SHOP]
+        assert router.client.models.generate_content.call_count == 2
+
+    def test_persistent_transient_error_falls_back(self, router, monkeypatch):
+        """持續 503（重試用盡）才回 FALLBACK。"""
+        monkeypatch.setattr("core.agent_router.time.sleep", lambda s: None)
+        router.client.models.generate_content.side_effect = Exception(
+            "503 UNAVAILABLE"
+        )
+
+        result = router.dispatch("雙連站附近有推薦的拉麵嗎?")
+
+        assert result["intent"] == "FALLBACK"
+        assert router.client.models.generate_content.call_count == 3
+
+    def test_non_transient_error_not_retried(self, router, monkeypatch):
+        """非暫時性錯誤不重試，直接 FALLBACK（僅呼叫一次）。"""
+        monkeypatch.setattr("core.agent_router.time.sleep", lambda s: None)
+        router.client.models.generate_content.side_effect = ValueError(
+            "invalid argument"
+        )
+
+        result = router.dispatch("雙連站附近有推薦的拉麵嗎?")
+
+        assert result["intent"] == "FALLBACK"
+        assert router.client.models.generate_content.call_count == 1
