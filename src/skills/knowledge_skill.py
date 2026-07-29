@@ -7,6 +7,7 @@ from google.genai import types
 
 from core.prompts import KNOWLEDGE_ANSWER_PROMPT
 from core.usage_tracker import check_and_increment, record_tokens
+from core.llm_retry import generate_with_retry
 from core import timing
 
 RED = "\033[91m"
@@ -125,13 +126,16 @@ class KnowledgeSkill:
         """
         embeddings = []
         for text in texts:
-            result = self.client.models.embed_content(
-                model=EMBED_MODEL,
-                contents=text,
-                config=types.EmbedContentConfig(
-                    task_type=task_type,
-                    output_dimensionality=768,
+            result = generate_with_retry(
+                lambda: self.client.models.embed_content(
+                    model=EMBED_MODEL,
+                    contents=text,
+                    config=types.EmbedContentConfig(
+                        task_type=task_type,
+                        output_dimensionality=768,
+                    ),
                 ),
+                label="embedding",
             )
             embeddings.append(result.embeddings[0].values)
         return embeddings
@@ -211,9 +215,12 @@ class KnowledgeSkill:
 
             prompt = KNOWLEDGE_ANSWER_PROMPT.format(context=context, query=query)
             with timing.time_llm("knowledge"):
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
+                response = generate_with_retry(
+                    lambda: self.client.models.generate_content(
+                        model=self.model_name,
+                        contents=prompt,
+                    ),
+                    label="知識問答",
                 )
             if response.usage_metadata:
                 record_tokens(response.usage_metadata.total_token_count or 0)
@@ -269,9 +276,12 @@ class KnowledgeSkill:
 
             prompt = KNOWLEDGE_ANSWER_PROMPT.format(context=context, query=query)
             with timing.time_llm("knowledge"):
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
+                response = generate_with_retry(
+                    lambda: self.client.models.generate_content(
+                        model=self.model_name,
+                        contents=prompt,
+                    ),
+                    label="知識問答",
                 )
             if response.usage_metadata:
                 record_tokens(response.usage_metadata.total_token_count or 0)

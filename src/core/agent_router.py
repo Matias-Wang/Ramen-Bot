@@ -2,7 +2,7 @@ import json
 import os
 import re
 import time
-from typing import Any, Callable
+from typing import Any
 
 from google import genai
 from google.genai import types
@@ -17,6 +17,7 @@ from skills.knowledge_skill import KnowledgeSkill
 from core.prompts import IDENTIFY_INSTRUCTION_PROMPT
 from core.usage_tracker import check_and_increment, record_tokens
 from core.conversation_logger import log_conversation
+from core.llm_retry import generate_with_retry
 from core import timing
 
 RED = '\033[91m'
@@ -61,71 +62,6 @@ INTENT_RESPONSE_SCHEMA = types.Schema(
         ),
     },
 )
-
-# Gemini 偶發暫時性錯誤（過載/限流/逾時）標記；命中則重試而非直接失敗。
-_TRANSIENT_ERROR_MARKERS = (
-    "503", "unavailable", "overloaded", "500", "internal",
-    "429", "resource_exhausted", "deadline", "timeout",
-)
-
-
-def _is_transient_error(exc: Exception) -> bool:
-    """
-    判斷例外是否為可重試的暫時性錯誤（Gemini 過載/限流/逾時）。
-
-    Parameters
-    ----------
-    exc : Exception
-        Gemini 呼叫拋出的例外。
-
-    Returns
-    -------
-    bool
-        訊息含暫時性錯誤特徵（503/UNAVAILABLE/429/timeout 等）回傳 True。
-    """
-    msg = str(exc).lower()
-    return any(marker in msg for marker in _TRANSIENT_ERROR_MARKERS)
-
-
-def _generate_content_with_retry(
-    call: Callable[[], Any], attempts: int = 3, base_delay: float = 0.6
-) -> Any:
-    """
-    執行 Gemini 呼叫，遇暫時性錯誤時以指數退避重試。
-
-    Gemini 偶發 503（"high demand"）等暫時性過載，單次閃斷不應直接讓意圖
-    解析失敗、回覆使用者「系統忙碌中」。非暫時性錯誤或重試用盡時向上拋出。
-
-    Parameters
-    ----------
-    call : Callable[[], Any]
-        無參數的 Gemini 呼叫（以 lambda 包裝）。
-    attempts : int
-        最多嘗試次數（含首次），預設 3。
-    base_delay : float
-        指數退避基底秒數，預設 0.6（重試間隔 0.6s、1.2s...）。
-
-    Returns
-    -------
-    Any
-        Gemini 回應物件。
-
-    Raises
-    ------
-    Exception
-        重試用盡或非暫時性錯誤時，向上拋出最後一次的例外。
-    """
-    for i in range(attempts):
-        try:
-            return call()
-        except Exception as e:
-            if i < attempts - 1 and _is_transient_error(e):
-                print(f"{RED}STEP 1 WARN: Gemini 暫時性錯誤，重試 "
-                      f"{i + 1}/{attempts - 1}：{e}{RESET}")
-                time.sleep(base_delay * (2 ** i))
-                continue
-            raise
-
 
 class AgentRouter:
     """
@@ -268,7 +204,7 @@ class AgentRouter:
                 f"[目前時間：{current_time}]\n{user_text}" if current_time else user_text
             )
             with timing.time_llm("intent"):
-                model_result = _generate_content_with_retry(
+                model_result = generate_with_retry(
                     lambda: self.client.models.generate_content(
                         model=self.model_name,
                         contents=contents,
@@ -277,7 +213,8 @@ class AgentRouter:
                             response_mime_type="application/json",
                             response_schema=INTENT_RESPONSE_SCHEMA,
                         ),
-                    )
+                    ),
+                    label="intent",
                 )
             if model_result.usage_metadata:
                 record_tokens(model_result.usage_metadata.total_token_count or 0)

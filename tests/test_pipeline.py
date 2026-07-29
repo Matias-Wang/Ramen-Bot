@@ -352,7 +352,7 @@ class TestDispatchTransientRetry:
 
     def test_transient_error_then_success_retries(self, router, monkeypatch):
         """首次 503、重試後成功，應正常解析出意圖，不落入 FALLBACK。"""
-        monkeypatch.setattr("core.agent_router.time.sleep", lambda s: None)
+        monkeypatch.setattr("core.llm_retry.time.sleep", lambda s: None)
         good = _make_gemini_response({
             "intent": "SEARCH_BY_CRITERIA",
             "location": "雙連站",
@@ -382,7 +382,7 @@ class TestDispatchTransientRetry:
 
     def test_persistent_transient_error_falls_back(self, router, monkeypatch):
         """持續 503（重試用盡）才回 FALLBACK。"""
-        monkeypatch.setattr("core.agent_router.time.sleep", lambda s: None)
+        monkeypatch.setattr("core.llm_retry.time.sleep", lambda s: None)
         router.client.models.generate_content.side_effect = Exception(
             "503 UNAVAILABLE"
         )
@@ -394,7 +394,7 @@ class TestDispatchTransientRetry:
 
     def test_non_transient_error_not_retried(self, router, monkeypatch):
         """非暫時性錯誤不重試，直接 FALLBACK（僅呼叫一次）。"""
-        monkeypatch.setattr("core.agent_router.time.sleep", lambda s: None)
+        monkeypatch.setattr("core.llm_retry.time.sleep", lambda s: None)
         router.client.models.generate_content.side_effect = ValueError(
             "invalid argument"
         )
