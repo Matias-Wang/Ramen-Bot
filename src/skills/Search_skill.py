@@ -40,6 +40,12 @@ _geocode_cache: Dict[str, Optional[Dict[str, float]]] = {}
 # Firestore 共用 Geocoding 快取 collection：地名→座標幾乎不變，跨 worker/
 # 重啟持久化，減少重複的 Geocoding API 呼叫與配額消耗。
 _GEOCODE_COLLECTION = "geocode_cache"
+# 圖片存活狀態短期快取（A2 延遲優化）：同一 image_url 於 TTL 內重複顯示時
+# 略過 HEAD 檢查，避免每次查詢都付出 HEAD 往返延遲。只快取「存活」結果，
+# 且 TTL 短（簽章網址仍可能在 TTL 內過期，故不宜長）。url -> 到期時戳。
+_IMAGE_ALIVE_TTL_SECONDS = 300
+_IMAGE_ALIVE_CACHE_MAX = 2000
+_image_alive_cache: Dict[str, float] = {}
 _gmaps_instance: Optional[GoogleMapsService] = None
 
 # 推薦文用的 Gemini client pool（預熱 3 個獨立實例，確保並行不序列化）
@@ -153,11 +159,26 @@ def _is_image_url_alive(url: str, timeout: float = 3.0) -> bool:
     bool
         HTTP 狀態碼為 200 回傳 True；逾時、連線失敗或非 200 一律視為失效。
     """
+    # 短期存活快取命中：TTL 內同一網址略過 HEAD，省去使用者等待路徑上的往返。
+    now = time.time()
+    expiry = _image_alive_cache.get(url)
+    if expiry is not None and now < expiry:
+        return True
+
     try:
         resp = requests.head(url, timeout=timeout, allow_redirects=True)
-        return resp.status_code == 200
+        alive = resp.status_code == 200
     except requests.RequestException:
-        return False
+        alive = False
+
+    if alive:
+        # 僅快取存活結果（失效網址會走背景修復換新網址，不需快取）
+        if len(_image_alive_cache) >= _IMAGE_ALIVE_CACHE_MAX:
+            # 清掉已過期項，避免無限增長（同 message_dedup 的有上限策略）
+            for _u in [u for u, e in _image_alive_cache.items() if e <= now]:
+                _image_alive_cache.pop(_u, None)
+        _image_alive_cache[url] = now + _IMAGE_ALIVE_TTL_SECONDS
+    return alive
 
 
 def _refresh_shop_image(shop: Dict[str, Any]) -> None:
