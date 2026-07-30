@@ -615,3 +615,87 @@ class TestRefreshShopImage:
         )
         search_skill._refresh_shop_image({"name": "查無照片的店", "place_id": "xyz"})
         assert called == []
+
+
+# ─── _get_latlng_cached 三層快取 ───────────────────────────────────────────────
+
+# 於 import 時捕捉真實函式（模組級 autouse fixture 會把模組屬性換成 mock，
+# 直接呼叫真實函式物件即可繞過，且其內部讀取的相依仍受本測試 monkeypatch 影響）。
+_real_get_latlng_cached = search_skill._get_latlng_cached
+
+
+class TestGetLatLngCachedTiering:
+    """三層快取順序：記憶體 → Firestore（生產）→ Geocoding API。"""
+
+    @pytest.fixture(autouse=True)
+    def _clear_mem_cache(self):
+        search_skill._geocode_cache.clear()
+        yield
+        search_skill._geocode_cache.clear()
+
+    def test_memory_hit_skips_firestore_and_api(self, monkeypatch):
+        """記憶體命中即返回，不查 Firestore、不打 API。"""
+        search_skill._geocode_cache["台北市"] = {"lat": 25.0, "lng": 121.5}
+        monkeypatch.setattr(
+            search_skill, "_load_geocode_from_firestore",
+            lambda loc: pytest.fail("記憶體命中時不應查 Firestore"),
+        )
+        monkeypatch.setattr(
+            search_skill, "_get_gmaps",
+            lambda: pytest.fail("記憶體命中時不應打 API"),
+        )
+        assert _real_get_latlng_cached("台北市") == {"lat": 25.0, "lng": 121.5}
+
+    def test_firestore_hit_skips_api_and_populates_memory(self, monkeypatch):
+        """Firestore 命中即返回，不打 API，並回填記憶體快取。"""
+        monkeypatch.setattr(search_skill, "USE_FIRESTORE", True)
+        monkeypatch.setattr(
+            search_skill, "_load_geocode_from_firestore",
+            lambda loc: {"lat": 25.1, "lng": 121.6},
+        )
+        monkeypatch.setattr(
+            search_skill, "_get_gmaps",
+            lambda: pytest.fail("Firestore 命中時不應打 API"),
+        )
+        result = _real_get_latlng_cached("信義區")
+        assert result == {"lat": 25.1, "lng": 121.6}
+        assert search_skill._geocode_cache["信義區"] == {"lat": 25.1, "lng": 121.6}
+
+    def test_api_fallthrough_writes_back_to_firestore(self, monkeypatch):
+        """兩層皆 miss 時打 API，成功結果回寫 Firestore。"""
+        monkeypatch.setattr(search_skill, "USE_FIRESTORE", True)
+        monkeypatch.setattr(
+            search_skill, "_load_geocode_from_firestore", lambda loc: None
+        )
+
+        class _FakeGmaps:
+            def get_latlng(self, loc):
+                return {"lat": 24.9, "lng": 121.4}
+
+        monkeypatch.setattr(search_skill, "_get_gmaps", lambda: _FakeGmaps())
+        saved = []
+        monkeypatch.setattr(
+            search_skill, "_save_geocode_to_firestore",
+            lambda loc, coords: saved.append((loc, coords)),
+        )
+        result = _real_get_latlng_cached("桃園")
+        assert result == {"lat": 24.9, "lng": 121.4}
+        assert saved == [("桃園", {"lat": 24.9, "lng": 121.4})]
+
+    def test_api_failure_not_persisted(self, monkeypatch):
+        """Geocoding 失敗（None）不寫入 Firestore（避免永久快取暫時性失敗）。"""
+        monkeypatch.setattr(search_skill, "USE_FIRESTORE", True)
+        monkeypatch.setattr(
+            search_skill, "_load_geocode_from_firestore", lambda loc: None
+        )
+
+        class _FakeGmaps:
+            def get_latlng(self, loc):
+                return None
+
+        monkeypatch.setattr(search_skill, "_get_gmaps", lambda: _FakeGmaps())
+        monkeypatch.setattr(
+            search_skill, "_save_geocode_to_firestore",
+            lambda loc, coords: pytest.fail("失敗結果不應寫入 Firestore"),
+        )
+        assert _real_get_latlng_cached("不存在的地名XYZ") is None

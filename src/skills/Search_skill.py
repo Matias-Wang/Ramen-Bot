@@ -7,7 +7,7 @@ import time
 import re
 import math
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 import requests
@@ -35,7 +35,11 @@ USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"
 _CACHE_TTL_SECONDS = 86400  # Firestore 店家快取 24 小時
 _shops_cache: List[Dict[str, Any]] = []
 _shops_cache_time: float = 0.0
+# Geocoding 記憶體快取（process 內，最快）。生產模式另有 Firestore 共用層。
 _geocode_cache: Dict[str, Optional[Dict[str, float]]] = {}
+# Firestore 共用 Geocoding 快取 collection：地名→座標幾乎不變，跨 worker/
+# 重啟持久化，減少重複的 Geocoding API 呼叫與配額消耗。
+_GEOCODE_COLLECTION = "geocode_cache"
 _gmaps_instance: Optional[GoogleMapsService] = None
 
 # 推薦文用的 Gemini client pool（預熱 3 個獨立實例，確保並行不序列化）
@@ -221,25 +225,87 @@ def resolve_shop_images(shops: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return resolved
 
 
+def _geocode_doc_id(location: str) -> str:
+    """將地名正規化為 Firestore 安全的 document id（避免 '/' 破壞路徑）。"""
+    return location.strip().replace("/", "_") or "unknown"
+
+
+def _load_geocode_from_firestore(location: str) -> Optional[Dict[str, float]]:
+    """從 Firestore `geocode_cache` 讀取地名對應座標，查無或失敗回傳 None。"""
+    try:
+        from services.firestore_client import get_db
+
+        snap = (
+            get_db()
+            .collection(_GEOCODE_COLLECTION)
+            .document(_geocode_doc_id(location))
+            .get()
+        )
+        if snap.exists:
+            data = snap.to_dict() or {}
+            lat, lng = data.get("lat"), data.get("lng")
+            if lat is not None and lng is not None:
+                return {"lat": lat, "lng": lng}
+    except Exception as e:
+        print(f"{RED}STEP ERROR: Firestore geocode 快取讀取失敗: {e}{RESET}")
+    return None
+
+
+def _save_geocode_to_firestore(location: str, coords: Dict[str, float]) -> None:
+    """將成功的 Geocoding 結果寫入 Firestore `geocode_cache`（fire-and-forget）。"""
+    try:
+        from services.firestore_client import get_db
+
+        get_db().collection(_GEOCODE_COLLECTION).document(
+            _geocode_doc_id(location)
+        ).set(
+            {
+                "query": location,
+                "lat": coords["lat"],
+                "lng": coords["lng"],
+                "cached_at": datetime.now(timezone.utc),
+            }
+        )
+    except Exception as e:
+        print(f"{RED}STEP ERROR: Firestore geocode 快取寫入失敗: {e}{RESET}")
+
+
 def _get_latlng_cached(location: str) -> Optional[Dict[str, float]]:
     """
-    Geocoding 結果快取，相同地名只呼叫一次 API。
+    Geocoding 結果三層快取：記憶體 → Firestore（生產）→ Geocoding API。
+
+    地名→座標幾乎不變，故成功結果下沉至 Firestore `geocode_cache` 跨 worker/
+    重啟共用，減少重複 API 呼叫與配額消耗。失敗（None）僅留在 process 記憶體、
+    不寫入 Firestore，避免把暫時性失敗永久快取（重啟後可重試）。
 
     Parameters
     ----------
     location : str
-        目標地名。
+        目標地名（已由 _build_geocode_query 正規化的查詢字串）。
 
     Returns
     -------
     Optional[Dict[str, float]]
         {'lat': ..., 'lng': ...} 或 None。
     """
+    # 1. 記憶體快取（最快）
     if location in _geocode_cache:
         return _geocode_cache[location]
+
+    # 2. Firestore 共用快取（僅生產模式；跨 worker/重啟持久化）
+    if USE_FIRESTORE:
+        cached = _load_geocode_from_firestore(location)
+        if cached is not None:
+            print(f"{CYAN}[CACHE] 命中 Firestore geocode 快取：{location}{RESET}")
+            _geocode_cache[location] = cached
+            return cached
+
+    # 3. 呼叫 Geocoding API，成功結果回寫兩層快取
     gmaps = _get_gmaps()
     result = gmaps.get_latlng(location)
     _geocode_cache[location] = result
+    if USE_FIRESTORE and result is not None:
+        _save_geocode_to_firestore(location, result)
     return result
 
 
