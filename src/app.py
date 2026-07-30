@@ -33,6 +33,7 @@ from skills.Search_skill import (
 )
 from core.message_dedup import is_duplicate_message
 from core.usage_tracker import check_and_increment
+from core.obs import emit_metric
 from skills.feedback_skill import collect_report, check_pending_reports
 from datetime import datetime, timezone, timedelta
 
@@ -271,6 +272,12 @@ def _reply_to_line(
         llm_snap = (result or {}).get("timing") or timing.snapshot(None)
         kpi = {**llm_snap, "total_s": round(time.time() - _t_start, 2)}
         print(f"{GREEN}[KPI][webhook] {timing.format_kpi(kpi)}{RESET}")
+        # 結構化事件（供 Cloud Logging 建立 FALLBACK 率 / 延遲告警）
+        emit_metric(
+            "request",
+            intent=(result or {}).get("intent", "ERROR"),
+            total_s=kpi["total_s"],
+        )
 
 
 def _reply_location(
@@ -336,8 +343,11 @@ def _reply_location(
             print(f"{RED}ERROR: push_message 失敗（確認使用者是否加好友）: {reply_err}{RESET}")
     finally:
         # 效能 KPI：webhook 收到 → 回覆推播完成的端到端耗時 + 推薦文 LLM 明細
+        _total_s = round(time.time() - _t_start, 2)
         kpi = timing.snapshot(records, time.time() - _t_start)
         print(f"{GREEN}[KPI][webhook] {timing.format_kpi(kpi)}{RESET}")
+        # 結構化事件（供 Cloud Logging 建立延遲告警）
+        emit_metric("location_request", total_s=_total_s)
 
 
 TAIPEI_TZ = timezone(timedelta(hours=8))

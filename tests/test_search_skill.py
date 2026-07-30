@@ -214,6 +214,8 @@ def _mock_search_dependencies(monkeypatch):
         "_get_latlng_cached",
         lambda query: _MOCK_GEOCODE_RESULTS.get(query),
     )
+    # 清空圖片存活狀態快取，避免跨測試殘留（同一 url 在不同測試預期不同結果）
+    search_skill._image_alive_cache.clear()
 
 
 class TestFilterRamenDataLocationQueries:
@@ -517,6 +519,20 @@ class TestIsImageUrlAlive:
 
         monkeypatch.setattr(search_skill.requests, "head", _raise)
         assert search_skill._is_image_url_alive("https://example.com/a.jpg") is False
+
+    def test_alive_result_cached_skips_head(self, monkeypatch):
+        """存活結果於 TTL 內快取：第二次呼叫命中快取、不再實際打 HEAD。"""
+        monkeypatch.setattr(
+            search_skill.requests, "head", lambda *a, **k: _FakeResponse(200)
+        )
+        url = "https://example.com/cached.jpg"
+        assert search_skill._is_image_url_alive(url) is True
+
+        def _fail(*a, **k):
+            raise AssertionError("命中快取時不應呼叫 requests.head")
+
+        monkeypatch.setattr(search_skill.requests, "head", _fail)
+        assert search_skill._is_image_url_alive(url) is True
 
 
 class TestResolveShopImages:
