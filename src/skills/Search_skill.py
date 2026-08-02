@@ -10,6 +10,7 @@ import random
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
+import requests
 from google import genai
 from google.genai import types
 
@@ -180,6 +181,121 @@ def _load_all_shops() -> List[Dict[str, Any]]:
         _shops_cache = fetched
         _shops_cache_time = time.time()
     return _shops_cache
+
+
+def _is_image_url_alive(url: str, timeout: float = 3.0) -> bool:
+    """
+    對圖片網址發 HEAD request，確認是否仍可載入。
+
+    Google Places API 回傳的 photoUri 是有時效性的簽章網址，過期後仍是合法的
+    https 格式，但實際請求會回 403，僅靠字串判斷無法得知是否已失效。
+
+    Parameters
+    ----------
+    url : str
+        要檢查的圖片網址。
+    timeout : float
+        逾時秒數，預設 3 秒（此檢查在使用者等待回覆的路徑上執行，須夠快）。
+
+    Returns
+    -------
+    bool
+        HTTP 狀態碼為 200 回傳 True；逾時、連線失敗或非 200 一律視為失效。
+    """
+    try:
+        return requests.head(url, timeout=timeout, allow_redirects=True).status_code == 200
+    except requests.RequestException:
+        return False
+
+
+def _refresh_shop_image(shop: Dict[str, Any]) -> None:
+    """
+    重新呼叫 Google Places API 取得新的照片網址，連同更新時間一併寫回資料源。
+
+    於**回覆送出之後**在背景執行，fire-and-forget，任何失敗都只印出錯誤、
+    不拋出。`image_url_renew_date` 記錄本次更新時刻（UTC ISO 8601），供日後
+    觀測簽章網址的實際存活時間，是決定刷新策略的依據。
+
+    Parameters
+    ----------
+    shop : Dict[str, Any]
+        圖片網址已過期的店家資料字典（需含 place_id 才能查詢）。
+    """
+    place_id = shop.get("place_id")
+    name = shop.get("name") or "未知店名"
+    if not place_id:
+        return
+    try:
+        new_url = _get_gmaps().get_photo_by_place_id(place_id)
+    except Exception as e:
+        print(f"{RED}STEP ERROR: 重新取得 {name} 圖片失敗: {e}{RESET}")
+        return
+    if not new_url:
+        print(f"{YELLOW}STEP: 查無 {name} 的新照片{RESET}")
+        return
+
+    renew_date = datetime.now(timezone.utc).isoformat()
+    persist_shop_fields(
+        shop, {"image_url": new_url, "image_url_renew_date": renew_date}
+    )
+    print(f"{GREEN}STEP: 已更新 {name} 的圖片網址（{renew_date}）{RESET}")
+
+
+def resolve_shop_images(
+    shops: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    在組裝 Flex Message 前，平行檢查店家圖片網址是否仍存活。
+
+    過期者的 image_url 置為 None，讓 flex_handler 既有的 fallback 自動改用
+    預設圖，使用者不會看到破圖。**本函式不觸發任何 API 更新**——需要更新的
+    店家以第二個回傳值交給呼叫端，於回覆送出後再呼叫
+    `refresh_shop_images_async()`，確保更新不與回覆搶資源。
+
+    Parameters
+    ----------
+    shops : List[Dict[str, Any]]
+        即將顯示給使用者的店家清單（通常 ≤3 筆，回覆前的最後一步呼叫）。
+
+    Returns
+    -------
+    tuple[List[Dict[str, Any]], List[Dict[str, Any]]]
+        (可直接顯示的店家清單（淺複製）, 網址已過期、待回覆後更新的原始店家清單)。
+    """
+    if not shops:
+        return shops, []
+
+    urls = [s.get("image_url") for s in shops]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(shops)) as ex:
+        alive_flags = list(
+            ex.map(lambda u: _is_image_url_alive(u) if u else True, urls)
+        )
+
+    resolved: List[Dict[str, Any]] = []
+    stale: List[Dict[str, Any]] = []
+    for shop, url, alive in zip(shops, urls, alive_flags):
+        shop_copy = copy.copy(shop)
+        if url and not alive:
+            print(f"{YELLOW}STEP: {shop.get('name')} 圖片網址已過期，本次用預設圖{RESET}")
+            shop_copy["image_url"] = None
+            stale.append(shop)
+        resolved.append(shop_copy)
+    return resolved, stale
+
+
+def refresh_shop_images_async(shops: List[Dict[str, Any]]) -> None:
+    """
+    於回覆送出後，在背景更新這批店家的圖片網址。
+
+    Parameters
+    ----------
+    shops : List[Dict[str, Any]]
+        `resolve_shop_images()` 回傳的待更新店家清單。
+    """
+    for shop in shops:
+        threading.Thread(
+            target=_refresh_shop_image, args=(shop,), daemon=True
+        ).start()
 
 
 def _geocode_doc_id(location: str) -> str:
@@ -703,13 +819,55 @@ def _update_cache_field(shop_id: Any, name: str, field: str, value: str) -> None
             break
 
 
+def persist_shop_fields(shop: Dict[str, Any], fields: Dict[str, Any]) -> None:
+    """
+    將單一店家的多個欄位一次寫回資料源，並同步更新模組層級快取。
+
+    僅寫入指定欄位（Firestore merge / 本地更新對應 key），不寫整包 shop dict，
+    以免 distance_km 等查詢期暫存欄位汙染持久化資料。一次寫入多欄可確保
+    image_url 與 image_url_renew_date 這類必須同進退的欄位不會不一致。
+
+    Parameters
+    ----------
+    shop : Dict[str, Any]
+        店家資料字典（可能為查詢期的淺複製）。
+    fields : Dict[str, Any]
+        欲寫入的欄位與值；為空時不做任何事。
+    """
+    if not fields:
+        return
+
+    name = shop.get("name") or ""
+    shop_id = shop.get("id")
+    for field, value in fields.items():
+        _update_cache_field(shop_id, name, field, value)
+
+    try:
+        if USE_FIRESTORE:
+            from services.firestore_client import get_db
+
+            db = get_db()
+            doc_id = str(shop_id or name or "unknown").strip().replace("/", "_")
+            db.collection("ramen_shops").document(doc_id).set(fields, merge=True)
+        else:
+            data_path = os.path.join("data", "ramen_data.json")
+            with open(data_path, "r", encoding="utf-8") as f:
+                all_shops = json.load(f)
+            for _s in all_shops:
+                if (shop_id and _s.get("id") == shop_id) or _s.get("name") == name:
+                    _s.update(fields)
+                    break
+            with open(data_path, "w", encoding="utf-8") as f:
+                json.dump(all_shops, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"{RED}STEP ERROR: 寫回 {list(fields)} 失敗: {e}{RESET}")
+
+
 def persist_shop_summary(shop: Dict[str, Any], field: str, value: str) -> None:
     """
-    將單一店家的 AI 摘要欄位寫回資料源，並同步更新模組層級快取。
+    將單一店家的 AI 摘要欄位寫回資料源。
 
-    僅寫入指定的單一欄位（Firestore merge / 本地更新對應 key），不寫整包 shop
-    dict，以免 distance_km 等查詢期暫存欄位汙染持久化資料。value 為空字串時
-    （LLM 生成失敗）不寫入，保留下次重試機會。
+    value 為空字串時（LLM 生成失敗）不寫入，保留下次重試機會。
 
     Parameters
     ----------
@@ -722,32 +880,7 @@ def persist_shop_summary(shop: Dict[str, Any], field: str, value: str) -> None:
     """
     if not value:
         return
-
-    name = shop.get("name") or ""
-    shop_id = shop.get("id")
-    _update_cache_field(shop_id, name, field, value)
-
-    try:
-        if USE_FIRESTORE:
-            from services.firestore_client import get_db
-
-            db = get_db()
-            doc_id = str(shop_id or name or "unknown").strip().replace("/", "_")
-            db.collection("ramen_shops").document(doc_id).set(
-                {field: value}, merge=True
-            )
-        else:
-            data_path = os.path.join("data", "ramen_data.json")
-            with open(data_path, "r", encoding="utf-8") as f:
-                all_shops = json.load(f)
-            for _s in all_shops:
-                if (shop_id and _s.get("id") == shop_id) or _s.get("name") == name:
-                    _s[field] = value
-                    break
-            with open(data_path, "w", encoding="utf-8") as f:
-                json.dump(all_shops, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"{RED}STEP ERROR: 寫回 {field} 失敗: {e}{RESET}")
+    persist_shop_fields(shop, {field: value})
 
 
 # --- AI 推薦文生成邏輯 ---

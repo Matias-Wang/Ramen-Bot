@@ -7,8 +7,7 @@ import os
 import json
 import time
 import threading
-from typing import Any
-from flask import Flask, request, abort, make_response
+from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
@@ -27,10 +26,11 @@ from dotenv import load_dotenv
 from core.agent_router import AgentRouter
 from core.flex_handler import assemble_carousel, get_flex_bubble
 from core import timing
-from core.photo_service import fetch_photo
 from skills.Search_skill import (
     filter_by_location,
     generate_recommendations,
+    refresh_shop_images_async,
+    resolve_shop_images,
 )
 from core.message_dedup import is_duplicate_message
 from core.usage_tracker import check_and_increment
@@ -126,40 +126,6 @@ if os.getenv("DATA_BACKEND", "local") == "firestore":
         print(f"{YELLOW}[STARTUP] Firestore 心跳啟動失敗（非致命）: {e}{RESET}")
 
 
-@app.route("/photo/<place_id>", methods=['GET'])
-def photo(place_id: str) -> Any:
-    """
-    店家照片代理：直接回傳圖片位元組。
-
-    Flex Message 中放的是本端點的固定網址，因此 LINE 聊天記錄中的舊訊息
-    也能永遠正常顯示圖片（Places 回傳的簽章網址本身會過期，此處於每次被
-    載入時即時換取有效網址）。
-
-    注意：**必須回傳位元組，不可用 302 轉址**。實測 LINE 客戶端載入 hero 圖
-    時不會跟隨轉址，收到 302 即停止，圖片完全不顯示。
-    """
-    image = fetch_photo(place_id)
-    if image is None:
-        # 連預設圖都取不到（極罕見）。同樣標示不可快取，讓 LINE 下次會再試。
-        resp = make_response("", 503)
-        resp.headers["Cache-Control"] = "no-store"
-        return resp
-
-    body, content_type, is_fallback = image
-    resp = make_response(body)
-    resp.headers["Content-Type"] = content_type
-    if is_fallback:
-        # 這次沒拿到真實照片（配額用盡、Places 暫時性錯誤等）。**絕不可讓
-        # LINE 快取這個結果**，否則該店家會被鎖在預設圖直到快取到期，
-        # 即使照片其實下一分鐘就恢復正常也救不回來。
-        resp.headers["Cache-Control"] = "no-store"
-    else:
-        # 真實照片才允許快取：圖片位元組本身不會過期（會過期的簽章網址已隔離
-        # 在伺服器端），可安心讓 LINE 快取，減少重複下載與 Places API 呼叫。
-        resp.headers["Cache-Control"] = "public, max-age=86400"
-    return resp
-
-
 @app.route("/callback", methods=['POST'])
 def callback() -> str:
     """
@@ -204,7 +170,8 @@ def _reply_to_line(
         print(f"{CYAN}[TIMER] dispatch 完成，耗時 {time.time() - _t_start:.1f}s{RESET}")
 
         intent = result.get('intent')
-        data = result.get('data', [])
+        # 回覆前檢查圖片網址存活；過期者本次用預設圖，待回覆送出後才更新網址
+        data, stale_image_shops = resolve_shop_images(result.get('data', []))
         recommendations = result.get('recommendations', [])
         ui_tag = result.get('ui_tag')
 
@@ -292,6 +259,9 @@ def _reply_to_line(
         print(f"{GREEN}[TIMER] push_message 完成，耗時 {time.time() - _t_push:.1f}s，"
               f"全程總耗時 {time.time() - _t_start:.1f}s{RESET}")
 
+        # 回覆已送出，此時才更新過期的圖片網址（不與回覆搶資源）
+        refresh_shop_images_async(stale_image_shops)
+
     except Exception as e:
         print(f"{RED}ERROR in _reply_to_line: {e} | 全程耗時 {time.time() - _t_start:.1f}s{RESET}")
         try:
@@ -359,11 +329,16 @@ def _reply_location(
         recommendations = generate_recommendations(
             results, router.client, router.model_name, num_shops=len(results)
         )
+        # 回覆前檢查圖片網址存活；過期者本次用預設圖，待回覆送出後才更新網址
+        results, stale_image_shops = resolve_shop_images(results)
         carousel_contents = assemble_carousel(results, recommendations)
         flex = FlexSendMessage(alt_text="附近的拉麵推薦", contents=carousel_contents)
         check_and_increment("line_api")
         line_bot_api.push_message(user_id, flex)
         print(f"{GREEN}[TIMER] 位置訊息回覆完成，全程總耗時 {time.time() - _t_start:.1f}s{RESET}")
+
+        # 回覆已送出，此時才更新過期的圖片網址
+        refresh_shop_images_async(stale_image_shops)
 
     except Exception as e:
         print(f"{RED}ERROR in _reply_location: {e} | 全程耗時 {time.time() - _t_start:.1f}s{RESET}")
@@ -458,6 +433,7 @@ if __name__ == "__main__":
 
             print(f"{GREEN}STEP 2: 執行對應 Skill 並獲取資料 (Intent: {res['intent']})...{RESET}")
             print(f"  - 找到店家數量: {len(res.get('data', []))}")
+            res['data'], _stale = resolve_shop_images(res.get('data') or [])
 
             if res.get('recommendations'):
                 print(f"{GREEN}STEP 3: 正在生成 AI 推薦文案...{RESET}")

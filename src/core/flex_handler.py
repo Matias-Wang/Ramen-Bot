@@ -2,8 +2,6 @@ import json
 import copy
 from urllib.parse import quote
 
-from core.photo_service import photo_proxy_url
-
 # === 1. Flex Message 基礎模板 ===
 BASE_BUBBLE_STRUCTURE = {
     "type": "bubble",
@@ -75,10 +73,9 @@ def get_flex_bubble(shop, recommendation=None):
     address = shop.get('address') or '暫無地址'
     _desc = shop.get("description") or ""
     rec_text = recommendation if recommendation else (_desc if _desc else "點擊查看地圖了解更多。")
-    # 照片優先用 /photo/<place_id> 代理網址：Places 回傳的簽章網址會過期，
-    # 而 LINE 訊息推播後無法修改，聊天記錄中的舊訊息必須永遠能載入圖片。
-    # 未設定 PHOTO_PROXY_BASE（例如本地測試）時回退至既有的 image_url 欄位。
-    image_url = photo_proxy_url(shop.get('place_id')) or shop.get('image_url')
+    # image_url 由 Search_skill.resolve_shop_images() 於回覆前檢查過存活狀態，
+    # 已過期者會被置為 None，此處自動回退至模板的預設拉麵圖。
+    image_url = shop.get('image_url')
     if not (image_url and image_url.startswith('https://')):
         image_url = None
     map_url = shop.get('map_url') or f"https://www.google.com/maps/search/?api=1&query={quote(name)}"
