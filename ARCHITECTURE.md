@@ -121,6 +121,13 @@
 ### LINE Webhook 逾時應對 (1s Limit)
 LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略應對：
 - **非阻塞處理**：`handle_message` 收到請求後立即啟動 `threading.Thread`，主執行緒直接返回 200，AI 邏輯在背景完成後以 `push_message` 回覆（取代有 60 秒過期限制的 `reply_message`）。啟動時預熱 Firestore、Gemini、Google Maps、Gemini Client Pool，確保首次請求也能快速回應。
+  - ⚠️ **此設計的硬性前提：Cloud Run 必須設定 CPU 常駐配置（`--no-cpu-throttling`）**。
+    Cloud Run 預設只在「處理請求期間」配置 CPU，而本架構刻意讓請求立即結束、把所有工作
+    留在背景執行緒，兩者直接衝突：請求結束後背景執行緒只剩近乎 0 的 CPU，所有網路 I/O
+    慢 30~400 倍（實測同一段 Firestore 讀取：有請求在飛時 0.3s，背景執行緒中 133.6s），
+    TLS 交握甚至會被凍到對端斷線。`min-instances=1` 只保證實例不被回收，**不等同配置 CPU**。
+    此設定已寫入 `.github/workflows/deploy.yml`，修改部署流程時不可移除
+    （事件始末見 `DEVELOP_HISTORY.md` 2026-08-01）。
 - **快取優先策略 (Cache-First)**：對 API 數據實施 7 天的快取機制，減少重複請求延遲。
 - **預處理機制**：透過 `scripts/build_new_shops.py` 離線完成 IG 數據採集與座標化，確保查詢時不需即時等待；若有店家因人工新增或 Pipeline 中斷而缺少座標，可額外執行 `data/geocode_shops.py` 補齊，不影響已有座標的店家。
 

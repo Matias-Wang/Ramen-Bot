@@ -4,10 +4,10 @@
 """
 
 import threading
+import time
 from datetime import datetime
 
 import pytest
-import requests
 import skills.Search_skill as search_skill
 from skills.Search_skill import (
     calculate_distance,
@@ -16,7 +16,6 @@ from skills.Search_skill import (
     filter_ramen_data,
     filter_by_location,
     is_open_at,
-    resolve_shop_images,
 )
 
 
@@ -214,8 +213,6 @@ def _mock_search_dependencies(monkeypatch):
         "_get_latlng_cached",
         lambda query: _MOCK_GEOCODE_RESULTS.get(query),
     )
-    # 清空圖片存活狀態快取，避免跨測試殘留（同一 url 在不同測試預期不同結果）
-    search_skill._image_alive_cache.clear()
 
 
 class TestFilterRamenDataLocationQueries:
@@ -489,150 +486,6 @@ class TestFilterRamenDataOpenNow:
         assert set(ids) == {"shop_open", "shop_shut", "shop_no_hours"}
 
 
-# ─── _is_image_url_alive / resolve_shop_images ─────────────────────────────────
-# 注意：resolve_shop_images 對過期圖片會另開真實背景執行緒呼叫 _refresh_shop_image，
-# 故不monkeypatch threading.Thread 本身（ThreadPoolExecutor 內部也用同一個
-# threading 模組，patch 類別會連帶弄壞平行 HEAD 檢查），改用 threading.Event
-# 等待背景執行緒完成，斷言其副作用。
-
-class _FakeResponse:
-    def __init__(self, status_code):
-        self.status_code = status_code
-
-
-class TestIsImageUrlAlive:
-    def test_200_is_alive(self, monkeypatch):
-        monkeypatch.setattr(
-            search_skill.requests, "head", lambda *a, **k: _FakeResponse(200)
-        )
-        assert search_skill._is_image_url_alive("https://example.com/a.jpg") is True
-
-    def test_403_is_dead(self, monkeypatch):
-        monkeypatch.setattr(
-            search_skill.requests, "head", lambda *a, **k: _FakeResponse(403)
-        )
-        assert search_skill._is_image_url_alive("https://example.com/a.jpg") is False
-
-    def test_request_exception_is_dead(self, monkeypatch):
-        def _raise(*a, **k):
-            raise requests.RequestException("boom")
-
-        monkeypatch.setattr(search_skill.requests, "head", _raise)
-        assert search_skill._is_image_url_alive("https://example.com/a.jpg") is False
-
-    def test_alive_result_cached_skips_head(self, monkeypatch):
-        """存活結果於 TTL 內快取：第二次呼叫命中快取、不再實際打 HEAD。"""
-        monkeypatch.setattr(
-            search_skill.requests, "head", lambda *a, **k: _FakeResponse(200)
-        )
-        url = "https://example.com/cached.jpg"
-        assert search_skill._is_image_url_alive(url) is True
-
-        def _fail(*a, **k):
-            raise AssertionError("命中快取時不應呼叫 requests.head")
-
-        monkeypatch.setattr(search_skill.requests, "head", _fail)
-        assert search_skill._is_image_url_alive(url) is True
-
-
-class TestResolveShopImages:
-    def test_empty_list_returns_as_is(self):
-        assert resolve_shop_images([]) == []
-
-    def test_alive_image_kept_and_no_refresh_triggered(self, monkeypatch):
-        monkeypatch.setattr(search_skill, "_is_image_url_alive", lambda url: True)
-        refresh_calls = []
-        monkeypatch.setattr(
-            search_skill, "_refresh_shop_image", lambda shop: refresh_calls.append(shop)
-        )
-
-        shop = {"id": "s1", "name": "活著的店", "image_url": "https://x/a.jpg"}
-        result = resolve_shop_images([shop])
-
-        assert result[0]["image_url"] == "https://x/a.jpg"
-        # 存活的圖片不該觸發背景修復；沒有背景執行緒可等，直接同步斷言即可
-        assert refresh_calls == []
-
-    def test_dead_image_replaced_with_none_and_refresh_triggered(self, monkeypatch):
-        monkeypatch.setattr(search_skill, "_is_image_url_alive", lambda url: False)
-        refresh_calls = []
-        done = threading.Event()
-
-        def _fake_refresh(shop):
-            refresh_calls.append(shop)
-            done.set()
-
-        monkeypatch.setattr(search_skill, "_refresh_shop_image", _fake_refresh)
-
-        shop = {"id": "s2", "name": "過期的店", "image_url": "https://x/dead.jpg"}
-        result = resolve_shop_images([shop])
-
-        assert result[0]["image_url"] is None
-        # 原始 dict 不受影響（淺複製保護快取）
-        assert shop["image_url"] == "https://x/dead.jpg"
-        assert done.wait(timeout=2.0), "背景修復執行緒逾時未執行"
-        assert len(refresh_calls) == 1
-        assert refresh_calls[0]["id"] == "s2"
-
-    def test_missing_image_url_not_treated_as_expired(self, monkeypatch):
-        """本來就沒有圖的店家，不應觸發背景修復（沒有網址可檢查/修復）。"""
-        monkeypatch.setattr(
-            search_skill, "_is_image_url_alive", lambda url: False
-        )
-        refresh_calls = []
-        monkeypatch.setattr(
-            search_skill, "_refresh_shop_image", lambda shop: refresh_calls.append(shop)
-        )
-
-        shop = {"id": "s3", "name": "無圖的店", "image_url": None}
-        result = resolve_shop_images([shop])
-
-        assert result[0]["image_url"] is None
-        # image_url 為 None 時不進入「過期」分支，不會啟動任何背景執行緒
-        assert refresh_calls == []
-
-
-class TestRefreshShopImage:
-    def test_no_place_id_skips_api_call(self, monkeypatch):
-        called = []
-        monkeypatch.setattr(
-            search_skill, "persist_shop_summary", lambda *a, **k: called.append(a)
-        )
-        search_skill._refresh_shop_image({"name": "無 place_id 的店", "place_id": None})
-        assert called == []
-
-    def test_successful_refresh_persists_new_url(self, monkeypatch):
-        class _FakeGmaps:
-            def get_photo_by_place_id(self, place_id):
-                return "https://fresh.example.com/new.jpg"
-
-        monkeypatch.setattr(search_skill, "_get_gmaps", lambda: _FakeGmaps())
-        persisted = []
-        monkeypatch.setattr(
-            search_skill,
-            "persist_shop_summary",
-            lambda shop, field, value: persisted.append((shop["name"], field, value)),
-        )
-
-        shop = {"name": "過期店家", "place_id": "abc123"}
-        search_skill._refresh_shop_image(shop)
-
-        assert persisted == [("過期店家", "image_url", "https://fresh.example.com/new.jpg")]
-
-    def test_api_returns_none_does_not_persist(self, monkeypatch):
-        class _FakeGmaps:
-            def get_photo_by_place_id(self, place_id):
-                return None
-
-        monkeypatch.setattr(search_skill, "_get_gmaps", lambda: _FakeGmaps())
-        called = []
-        monkeypatch.setattr(
-            search_skill, "persist_shop_summary", lambda *a, **k: called.append(a)
-        )
-        search_skill._refresh_shop_image({"name": "查無照片的店", "place_id": "xyz"})
-        assert called == []
-
-
 # ─── _get_latlng_cached 三層快取 ───────────────────────────────────────────────
 
 # 於 import 時捕捉真實函式（模組級 autouse fixture 會把模組屬性換成 mock，
@@ -715,3 +568,106 @@ class TestGetLatLngCachedTiering:
             lambda loc, coords: pytest.fail("失敗結果不應寫入 Firestore"),
         )
         assert _real_get_latlng_cached("不存在的地名XYZ") is None
+
+
+# ─── _load_all_shops 快取（stale-while-revalidate） ────────────────────────────
+
+# 同 _get_latlng_cached：於 import 時捕捉真實函式，繞過 autouse fixture 的 mock
+_real_load_all_shops = search_skill._load_all_shops
+
+
+@pytest.fixture
+def _reset_shop_cache():
+    """每個測試前後重置模組層級店家快取與刷新旗標。"""
+    search_skill._shops_cache = []
+    search_skill._shops_cache_time = 0.0
+    search_skill._shops_refreshing = False
+    yield
+    search_skill._shops_cache = []
+    search_skill._shops_cache_time = 0.0
+    search_skill._shops_refreshing = False
+
+
+class TestLoadAllShopsCache:
+    """快取過期時應立即回傳舊資料、把重讀丟到背景，不阻塞使用者路徑。"""
+
+    def test_cold_start_fetches_synchronously(self, monkeypatch, _reset_shop_cache):
+        """完全無快取時（啟動預熱）同步讀取並寫入快取。"""
+        monkeypatch.setattr(
+            search_skill, "_fetch_all_shops", lambda: [{"id": "a"}]
+        )
+        assert _real_load_all_shops() == [{"id": "a"}]
+        assert search_skill._shops_cache == [{"id": "a"}]
+
+    def test_fresh_cache_does_not_fetch(self, monkeypatch, _reset_shop_cache):
+        """TTL 內直接回傳快取，不呼叫資料源。"""
+        search_skill._shops_cache = [{"id": "cached"}]
+        search_skill._shops_cache_time = time.time()
+        monkeypatch.setattr(
+            search_skill,
+            "_fetch_all_shops",
+            lambda: pytest.fail("快取未過期時不應讀取資料源"),
+        )
+        assert _real_load_all_shops() == [{"id": "cached"}]
+
+    def test_expired_cache_returns_stale_immediately(
+        self, monkeypatch, _reset_shop_cache
+    ):
+        """過期時立即回傳舊資料，並於背景完成刷新。"""
+        started = threading.Event()
+        finished = threading.Event()
+
+        def _slow_fetch():
+            started.set()
+            finished.wait(timeout=2.0)
+            return [{"id": "new"}]
+
+        search_skill._shops_cache = [{"id": "old"}]
+        search_skill._shops_cache_time = time.time() - search_skill._CACHE_TTL_SECONDS - 1
+        monkeypatch.setattr(search_skill, "_fetch_all_shops", _slow_fetch)
+
+        # 背景讀取尚未完成，呼叫端仍立刻拿到舊資料（不阻塞）
+        assert _real_load_all_shops() == [{"id": "old"}]
+        assert started.wait(timeout=2.0), "背景刷新執行緒未啟動"
+
+        finished.set()
+        for _ in range(100):
+            if search_skill._shops_cache == [{"id": "new"}]:
+                break
+            time.sleep(0.02)
+        assert search_skill._shops_cache == [{"id": "new"}]
+        assert search_skill._shops_refreshing is False
+
+    def test_concurrent_expiry_starts_single_refresh(
+        self, monkeypatch, _reset_shop_cache
+    ):
+        """連續多次過期呼叫只會啟動一個刷新執行緒。"""
+        calls = []
+        release = threading.Event()
+
+        def _blocking_fetch():
+            calls.append(1)
+            release.wait(timeout=2.0)
+            return [{"id": "new"}]
+
+        search_skill._shops_cache = [{"id": "old"}]
+        search_skill._shops_cache_time = time.time() - search_skill._CACHE_TTL_SECONDS - 1
+        monkeypatch.setattr(search_skill, "_fetch_all_shops", _blocking_fetch)
+
+        for _ in range(5):
+            assert _real_load_all_shops() == [{"id": "old"}]
+
+        release.set()
+        time.sleep(0.2)
+        assert len(calls) == 1
+
+    def test_failed_refresh_keeps_old_cache(self, monkeypatch, _reset_shop_cache):
+        """背景刷新讀取失敗（回空清單）時保留舊快取，不清空資料。"""
+        search_skill._shops_cache = [{"id": "old"}]
+        search_skill._shops_cache_time = time.time() - search_skill._CACHE_TTL_SECONDS - 1
+        monkeypatch.setattr(search_skill, "_fetch_all_shops", lambda: [])
+
+        assert _real_load_all_shops() == [{"id": "old"}]
+        time.sleep(0.2)
+        assert search_skill._shops_cache == [{"id": "old"}]
+        assert search_skill._shops_refreshing is False

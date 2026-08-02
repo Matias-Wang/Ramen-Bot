@@ -431,3 +431,42 @@
 - 待真實環境：對真實 Firestore 執行 `fetch_cloud_data.py`；部署後於 LINE 實際對話確認
   `conversation_logs` 正確累積（review/review_20260707_2242.md）。
 
+
+---
+
+## 2026-08-01 — 找出 LINE 回覆延遲的真正根因：Cloud Run CPU throttling
+
+### 修正
+- **正式環境 Cloud Run 服務改為 CPU 常駐配置**（`--no-cpu-throttling`）。這是長期
+  「回覆延遲數分鐘」問題的真正根因，先前 PENDING.md 待處理BUG #1 所做的三項優化
+  （Firestore 心跳、`f.result()` timeout、info_skill 快取）雖各自正確，但均未觸及此點，
+  故延遲反覆復發。
+- `.github/workflows/deploy.yml`：Deploy 步驟加上 `--no-cpu-throttling` 並註明原因，
+  避免日後 CI 部署遺失此設定。
+
+### 根因說明
+`src/app.py` 的 `handle_message` 為滿足 LINE webhook 1 秒限制，收到訊息後立即回 200，
+AI pipeline 全部交給背景 daemon thread。而 Cloud Run **預設只在「處理請求期間」配置 CPU**，
+請求既已結束，該背景執行緒即在近乎 0 的 CPU 下執行，所有網路 I/O（gRPC / TLS /
+protobuf 反序列化）連帶慢 30~400 倍，TLS 交握甚至被凍到對端斷線（`SSL: UNEXPECTED_EOF`，
+導致圖片自我修復路徑長期失效）。`min-instances=1` 只保證實例不被回收，不等同配置 CPU。
+
+決定性證據：同一段程式、同一批 180 筆資料的 Firestore 讀取，在「有請求在飛」時為 0.3s，
+在背景執行緒中則為 94.3s / 112.5s / 133.6s / 142.1s。
+
+### 驗證
+- 新舊 revision 啟動預熱對照：Firestore 讀取 180 筆 142.1s → **0.5s**；完整啟動序列
+  （Firestore + Gemini + Maps + LINE + Client Pool 全部預熱）12 秒完成。
+- LINE 實機複測「民權西路推薦的拉麵店有什麼」：端到端 **248.75s → 2.73s**（91 倍）。
+  拆解：意圖解析 25.2s→2.06s、篩選 145.9s→0.0s、push_message 53s→0.3s。
+- 附帶恢復：過期圖片的背景換網址（`_refresh_shop_image`）先前每次都因 SSL EOF 失敗，
+  現已能正常寫回新網址。
+- 詳見 `review/review_20260801_1423.md`。
+
+### 成本影響
+CPU 常駐改以實例生命週期計費，`min-instances=1`、1 vCPU / 1GiB 常駐，粗估每月增加
+約 US$40~50。已向使用者澄清 Google Maps Platform 的每月 US$200 抵免額為 Maps SKU
+專款專用、不可支付 Cloud Run / Firestore，使用者確認額度充足後同意採行。
+
+> 註：本檔案 2026-07-09 ~ 2026-07-30 期間的項目（AI 摘要快取、效能計時 KPI、
+> 高風險漏洞修補 H1~H4、Geocoding 快取下沉、A2/A4）尚未補寫，進度詳見 `PENDING.md`。
