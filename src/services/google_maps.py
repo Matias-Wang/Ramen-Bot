@@ -341,9 +341,17 @@ class GoogleMapsService:
             print(f"{RED}STEP ERROR: 用 place_id 取得營業時間失敗: {e}{RESET}")
             return None
 
-    def get_photo_url(self, photo_name: str, max_height_px: int = 800) -> Optional[str]:
+    def get_photo_url(
+        self,
+        photo_name: str,
+        max_height_px: int = 800,
+        max_width_px: int = 1000,
+    ) -> Optional[str]:
         """
         Places API (New) Media：將照片資源名稱轉換為有效的 HTTPS URL。
+
+        同時指定高與寬的上限，確保回傳圖片的兩邊都不超過 LINE Flex Message
+        的 1024px 限制（僅限高時，橫幅照片的寬可達 1067px 而無法顯示）。
 
         Parameters
         ----------
@@ -352,6 +360,8 @@ class GoogleMapsService:
             格式為 'places/{place_id}/photos/{photo_id}'。
         max_height_px : int, optional
             照片最大高度 (px)，預設為 800。
+        max_width_px : int, optional
+            照片最大寬度 (px)，預設為 1000（留 24px 餘裕給 LINE 的 1024 上限）。
 
         Returns
         -------
@@ -368,6 +378,7 @@ class GoogleMapsService:
             url = f"{PLACES_NEW_BASE_URL}/{photo_name}/media"
             params = {
                 "maxHeightPx": max_height_px,
+                "maxWidthPx": max_width_px,
                 "skipHttpRedirect": "true",
                 "key": self.api_key,
             }

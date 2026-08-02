@@ -8,7 +8,7 @@ import json
 import time
 import threading
 from typing import Any
-from flask import Flask, request, abort, redirect
+from flask import Flask, request, abort, make_response
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 from core.agent_router import AgentRouter
 from core.flex_handler import assemble_carousel, get_flex_bubble
 from core import timing
-from core.photo_service import DEFAULT_PHOTO_URL, resolve_photo_url
+from core.photo_service import fetch_photo
 from skills.Search_skill import (
     filter_by_location,
     generate_recommendations,
@@ -129,13 +129,25 @@ if os.getenv("DATA_BACKEND", "local") == "firestore":
 @app.route("/photo/<place_id>", methods=['GET'])
 def photo(place_id: str) -> Any:
     """
-    店家照片代理：302 導向當下有效的 Google Places 簽章網址。
+    店家照片代理：直接回傳圖片位元組。
 
     Flex Message 中放的是本端點的固定網址，因此 LINE 聊天記錄中的舊訊息
-    也能永遠正常顯示圖片（Places 回傳的簽章網址本身會過期）。解析失敗時
-    導向預設拉麵圖，確保永遠不會出現破圖。
+    也能永遠正常顯示圖片（Places 回傳的簽章網址本身會過期，此處於每次被
+    載入時即時換取有效網址）。
+
+    注意：**必須回傳位元組，不可用 302 轉址**。實測 LINE 客戶端載入 hero 圖
+    時不會跟隨轉址，收到 302 即停止，圖片完全不顯示。
     """
-    return redirect(resolve_photo_url(place_id) or DEFAULT_PHOTO_URL, code=302)
+    image = fetch_photo(place_id)
+    if image is None:
+        abort(404)
+    body, content_type = image
+    resp = make_response(body)
+    resp.headers["Content-Type"] = content_type
+    # 圖片位元組本身不會過期（會過期的簽章網址已隔離在伺服器端），可安心讓
+    # LINE 快取，減少重複下載與 Places API 呼叫。
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
 
 
 @app.route("/callback", methods=['POST'])
