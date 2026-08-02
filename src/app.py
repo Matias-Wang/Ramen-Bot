@@ -140,13 +140,23 @@ def photo(place_id: str) -> Any:
     """
     image = fetch_photo(place_id)
     if image is None:
-        abort(404)
-    body, content_type = image
+        # 連預設圖都取不到（極罕見）。同樣標示不可快取，讓 LINE 下次會再試。
+        resp = make_response("", 503)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    body, content_type, is_fallback = image
     resp = make_response(body)
     resp.headers["Content-Type"] = content_type
-    # 圖片位元組本身不會過期（會過期的簽章網址已隔離在伺服器端），可安心讓
-    # LINE 快取，減少重複下載與 Places API 呼叫。
-    resp.headers["Cache-Control"] = "public, max-age=86400"
+    if is_fallback:
+        # 這次沒拿到真實照片（配額用盡、Places 暫時性錯誤等）。**絕不可讓
+        # LINE 快取這個結果**，否則該店家會被鎖在預設圖直到快取到期，
+        # 即使照片其實下一分鐘就恢復正常也救不回來。
+        resp.headers["Cache-Control"] = "no-store"
+    else:
+        # 真實照片才允許快取：圖片位元組本身不會過期（會過期的簽章網址已隔離
+        # 在伺服器端），可安心讓 LINE 快取，減少重複下載與 Places API 呼叫。
+        resp.headers["Cache-Control"] = "public, max-age=86400"
     return resp
 
 

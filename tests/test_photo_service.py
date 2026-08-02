@@ -51,11 +51,17 @@ class TestPhotoProxyUrl:
 
     def test_builds_url_from_env(self, monkeypatch):
         monkeypatch.setenv("PHOTO_PROXY_BASE", "https://bot.example.com")
-        assert photo_proxy_url(_PLACE_ID) == f"https://bot.example.com/photo/{_PLACE_ID}"
+        assert photo_proxy_url(_PLACE_ID) == (
+            f"https://bot.example.com/photo/{_PLACE_ID}"
+            f"?v={photo_service.PHOTO_URL_VERSION}"
+        )
 
     def test_strips_trailing_slash(self, monkeypatch):
         monkeypatch.setenv("PHOTO_PROXY_BASE", "https://bot.example.com/")
-        assert photo_proxy_url(_PLACE_ID) == f"https://bot.example.com/photo/{_PLACE_ID}"
+        assert photo_proxy_url(_PLACE_ID) == (
+            f"https://bot.example.com/photo/{_PLACE_ID}"
+            f"?v={photo_service.PHOTO_URL_VERSION}"
+        )
 
     def test_returns_none_without_place_id(self, monkeypatch):
         monkeypatch.setenv("PHOTO_PROXY_BASE", "https://bot.example.com")
@@ -204,7 +210,7 @@ class TestFetchPhoto:
         monkeypatch.setattr(
             photo_service.requests, "get", lambda *a, **k: _FakeResp()
         )
-        assert photo_service.fetch_photo(_PLACE_ID) == (b"JPEGBYTES", "image/jpeg")
+        assert photo_service.fetch_photo(_PLACE_ID) == (b"JPEGBYTES", "image/jpeg", False)
 
     def test_falls_back_to_default_image_when_no_url(self, monkeypatch):
         """解析不到店家照片時改抓預設圖，仍回傳位元組（不可回轉址）。"""
@@ -217,7 +223,7 @@ class TestFetchPhoto:
 
         monkeypatch.setattr(photo_service.requests, "get", _get)
 
-        assert photo_service.fetch_photo(_PLACE_ID) == (b"DEFAULT", "image/jpeg")
+        assert photo_service.fetch_photo(_PLACE_ID) == (b"DEFAULT", "image/jpeg", True)
         assert requested == [photo_service.DEFAULT_PHOTO_URL]
 
     def test_stale_cached_url_triggers_single_reresolve(self, monkeypatch):
@@ -236,7 +242,7 @@ class TestFetchPhoto:
         monkeypatch.setattr(photo_service, "resolve_photo_url", _resolve)
         monkeypatch.setattr(photo_service.requests, "get", _get)
 
-        assert photo_service.fetch_photo(_PLACE_ID) == (b"JPEGBYTES", "image/jpeg")
+        assert photo_service.fetch_photo(_PLACE_ID) == (b"JPEGBYTES", "image/jpeg", False)
         assert calls["resolve"] == 2
         assert calls["get"] == 2
 
@@ -293,7 +299,7 @@ class TestStalePhotoNameSelfHealing:
             photo_service.requests, "get", lambda *a, **k: _FakeResp()
         )
 
-        assert photo_service.fetch_photo(_PLACE_ID) == (b"JPEGBYTES", "image/jpeg")
+        assert photo_service.fetch_photo(_PLACE_ID) == (b"JPEGBYTES", "image/jpeg", False)
         # 已強制重取並覆寫，下次請求即可直接命中新的 photo_name
         assert gmaps.name_calls == 1
         assert persisted == [("photo_name", fresh)]
@@ -317,4 +323,37 @@ class TestStalePhotoNameSelfHealing:
             lambda url, *a, **k: _FakeResp(content=b"DEFAULT"),
         )
 
-        assert photo_service.fetch_photo(_PLACE_ID) == (b"DEFAULT", "image/jpeg")
+        assert photo_service.fetch_photo(_PLACE_ID) == (b"DEFAULT", "image/jpeg", True)
+
+
+class TestCachePoisoningGuards:
+    """避免壞結果被 LINE 快取而讓店家永久卡在預設圖。"""
+
+    def test_fallback_is_flagged_so_endpoint_can_skip_cache(self, monkeypatch):
+        """回退預設圖時 is_fallback 必須為 True，端點才會送 no-store。"""
+        monkeypatch.setattr(
+            photo_service, "resolve_photo_url", lambda pid, force_refresh=False: None
+        )
+        monkeypatch.setattr(
+            photo_service.requests, "get", lambda *a, **k: _FakeResp(content=b"D")
+        )
+        result = photo_service.fetch_photo(_PLACE_ID)
+        assert result is not None and result[2] is True
+
+    def test_real_photo_is_not_flagged_as_fallback(self, monkeypatch):
+        monkeypatch.setattr(
+            photo_service,
+            "resolve_photo_url",
+            lambda pid, force_refresh=False: _SIGNED_URL,
+        )
+        monkeypatch.setattr(
+            photo_service.requests, "get", lambda *a, **k: _FakeResp()
+        )
+        result = photo_service.fetch_photo(_PLACE_ID)
+        assert result is not None and result[2] is False
+
+    def test_proxy_url_carries_version_for_cache_busting(self, monkeypatch):
+        """版本參數是快取遭汙染時唯一的補救手段，必須出現在網址中。"""
+        monkeypatch.setenv("PHOTO_PROXY_BASE", "https://bot.example.com")
+        url = photo_proxy_url(_PLACE_ID)
+        assert url.endswith(f"?v={photo_service.PHOTO_URL_VERSION}")
