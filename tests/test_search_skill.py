@@ -671,3 +671,179 @@ class TestLoadAllShopsCache:
         time.sleep(0.2)
         assert search_skill._shops_cache == [{"id": "old"}]
         assert search_skill._shops_refreshing is False
+
+
+# ─── 圖片網址存活檢查與回覆後更新 ─────────────────────────────────────────────
+
+
+class _FakeResponse:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+class TestIsImageUrlAlive:
+    def test_200_is_alive(self, monkeypatch):
+        monkeypatch.setattr(
+            search_skill.requests, "head", lambda *a, **k: _FakeResponse(200)
+        )
+        assert search_skill._is_image_url_alive("https://example.com/a.jpg") is True
+
+    def test_403_is_dead(self, monkeypatch):
+        monkeypatch.setattr(
+            search_skill.requests, "head", lambda *a, **k: _FakeResponse(403)
+        )
+        assert search_skill._is_image_url_alive("https://example.com/a.jpg") is False
+
+    def test_request_exception_is_dead(self, monkeypatch):
+        def _raise(*a, **k):
+            raise search_skill.requests.RequestException("boom")
+
+        monkeypatch.setattr(search_skill.requests, "head", _raise)
+        assert search_skill._is_image_url_alive("https://example.com/a.jpg") is False
+
+
+class TestResolveShopImages:
+    """回覆前只做檢查，不觸發任何 API 更新（更新交給回覆後）。"""
+
+    def test_empty_list(self):
+        assert search_skill.resolve_shop_images([]) == ([], [])
+
+    def test_alive_image_kept_and_not_marked_stale(self, monkeypatch):
+        monkeypatch.setattr(search_skill, "_is_image_url_alive", lambda url: True)
+        shop = {"id": "s1", "name": "活著的店", "image_url": "https://x/a.jpg"}
+        resolved, stale = search_skill.resolve_shop_images([shop])
+        assert resolved[0]["image_url"] == "https://x/a.jpg"
+        assert stale == []
+
+    def test_dead_image_uses_default_and_is_marked_stale(self, monkeypatch):
+        monkeypatch.setattr(search_skill, "_is_image_url_alive", lambda url: False)
+        shop = {"id": "s2", "name": "過期的店", "image_url": "https://x/dead.jpg"}
+        resolved, stale = search_skill.resolve_shop_images([shop])
+        # 本次回覆改用預設圖（image_url 置為 None 觸發 flex_handler 的 fallback）
+        assert resolved[0]["image_url"] is None
+        # 原始 dict 不受影響（淺複製保護快取）
+        assert shop["image_url"] == "https://x/dead.jpg"
+        assert len(stale) == 1 and stale[0]["id"] == "s2"
+
+    def test_missing_image_url_not_marked_stale(self, monkeypatch):
+        """本來就沒有圖的店家不需要更新，不應列入待更新清單。"""
+        monkeypatch.setattr(search_skill, "_is_image_url_alive", lambda url: False)
+        shop = {"id": "s3", "name": "無圖的店", "image_url": None}
+        resolved, stale = search_skill.resolve_shop_images([shop])
+        assert resolved[0]["image_url"] is None
+        assert stale == []
+
+    def test_no_api_call_during_check(self, monkeypatch):
+        """檢查階段絕不可呼叫 Places API——那是回覆後才做的事。"""
+        monkeypatch.setattr(search_skill, "_is_image_url_alive", lambda url: False)
+        monkeypatch.setattr(
+            search_skill,
+            "_get_gmaps",
+            lambda: pytest.fail("回覆前不應呼叫 Google Maps API"),
+        )
+        shop = {"id": "s4", "name": "過期的店", "image_url": "https://x/dead.jpg"}
+        search_skill.resolve_shop_images([shop])
+
+
+class TestRefreshShopImage:
+    """回覆後的更新：同時寫回 image_url 與 image_url_renew_date。"""
+
+    def test_no_place_id_skips_api_call(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(
+            search_skill, "persist_shop_fields", lambda *a, **k: called.append(a)
+        )
+        search_skill._refresh_shop_image({"name": "無 place_id", "place_id": None})
+        assert called == []
+
+    def test_successful_refresh_persists_url_and_renew_date(self, monkeypatch):
+        class _FakeGmaps:
+            def get_photo_by_place_id(self, place_id):
+                return "https://fresh.example.com/new.jpg"
+
+        monkeypatch.setattr(search_skill, "_get_gmaps", lambda: _FakeGmaps())
+        persisted = {}
+        monkeypatch.setattr(
+            search_skill,
+            "persist_shop_fields",
+            lambda shop, fields: persisted.update(fields),
+        )
+
+        search_skill._refresh_shop_image({"name": "過期店家", "place_id": "abc123"})
+
+        assert persisted["image_url"] == "https://fresh.example.com/new.jpg"
+        # 更新時間必須一併寫入，作為觀測簽章網址壽命的依據
+        renew = persisted["image_url_renew_date"]
+        parsed = datetime.fromisoformat(renew)
+        assert parsed.tzinfo is not None, "須為帶時區的 ISO 8601，避免時區歧義"
+
+    def test_api_returns_none_does_not_persist(self, monkeypatch):
+        class _FakeGmaps:
+            def get_photo_by_place_id(self, place_id):
+                return None
+
+        monkeypatch.setattr(search_skill, "_get_gmaps", lambda: _FakeGmaps())
+        called = []
+        monkeypatch.setattr(
+            search_skill, "persist_shop_fields", lambda *a, **k: called.append(a)
+        )
+        search_skill._refresh_shop_image({"name": "查無照片", "place_id": "xyz"})
+        assert called == []
+
+
+class TestPersistShopFields:
+    """image_url 與 image_url_renew_date 必須同一次寫入，避免兩者不一致。"""
+
+    def test_writes_all_fields_in_single_datasource_call(self, monkeypatch):
+        monkeypatch.setattr(search_skill, "USE_FIRESTORE", True)
+        cache_updates = []
+        monkeypatch.setattr(
+            search_skill,
+            "_update_cache_field",
+            lambda sid, name, field, value: cache_updates.append((field, value)),
+        )
+
+        written = {}
+
+        class _Doc:
+            def set(self, fields, merge=False):
+                written.update(fields)
+                written["_merge"] = merge
+
+        class _Col:
+            def document(self, doc_id):
+                written["_doc_id"] = doc_id
+                return _Doc()
+
+        class _Db:
+            def collection(self, name):
+                written["_collection"] = name
+                return _Col()
+
+        import services.firestore_client as fc
+
+        monkeypatch.setattr(fc, "get_db", lambda: _Db())
+
+        search_skill.persist_shop_fields(
+            {"id": "s1", "name": "測試店"},
+            {"image_url": "https://x/new.jpg", "image_url_renew_date": "2026-08-02T00:00:00+00:00"},
+        )
+
+        assert written["_collection"] == "ramen_shops"
+        assert written["_doc_id"] == "s1"
+        assert written["_merge"] is True
+        assert written["image_url"] == "https://x/new.jpg"
+        assert written["image_url_renew_date"] == "2026-08-02T00:00:00+00:00"
+        # 記憶體快取也要同步，讓同一 TTL 窗內的後續查詢看到新值
+        assert set(cache_updates) == {
+            ("image_url", "https://x/new.jpg"),
+            ("image_url_renew_date", "2026-08-02T00:00:00+00:00"),
+        }
+
+    def test_empty_fields_is_noop(self, monkeypatch):
+        monkeypatch.setattr(
+            search_skill,
+            "_update_cache_field",
+            lambda *a: pytest.fail("空欄位不應觸發任何寫入"),
+        )
+        search_skill.persist_shop_fields({"id": "s1", "name": "店"}, {})
