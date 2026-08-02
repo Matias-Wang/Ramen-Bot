@@ -47,6 +47,11 @@ _URL_CACHE_MAX = 500
 _url_cache: Dict[str, Tuple[str, float]] = {}
 
 PHOTO_MAX_HEIGHT_PX = 800
+
+# 圖片網址版本。LINE 以完整網址（含 query）為鍵快取圖片，若某網址曾回過壞結果
+# 可能被記住而無法自行恢復；調高此值即可讓所有店家的圖片網址一次全部更新。
+# v1 -> v2：v1 期間曾以 302 轉址回應（LINE 不跟隨轉址），該批網址已遭汙染。
+PHOTO_URL_VERSION = "2"
 # 下載圖片位元組的逾時秒數（此路徑不在使用者等待回覆的路徑上，可略寬鬆）
 _DOWNLOAD_TIMEOUT = 10.0
 
@@ -147,6 +152,11 @@ def photo_proxy_url(place_id: Optional[str]) -> Optional[str]:
     `https://ramen-bot-xxxx.asia-east1.run.app`）；未設定時回傳 None，
     由呼叫端回退至既有的 `image_url` 欄位或預設圖。
 
+    網址帶 `?v=` 版本參數：LINE 會以完整網址（含 query）為鍵快取圖片，
+    一旦某個網址曾回過壞結果就可能被記住而無法自行恢復。調高
+    `PHOTO_URL_VERSION` 即可讓**所有**店家的圖片網址一次全部更新，
+    是快取被汙染時唯一的補救手段。平時不需更動。
+
     Parameters
     ----------
     place_id : Optional[str]
@@ -155,12 +165,13 @@ def photo_proxy_url(place_id: Optional[str]) -> Optional[str]:
     Returns
     -------
     Optional[str]
-        `{PHOTO_PROXY_BASE}/photo/{place_id}`，條件不足時回傳 None。
+        `{PHOTO_PROXY_BASE}/photo/{place_id}?v={PHOTO_URL_VERSION}`，
+        條件不足時回傳 None。
     """
     base = (os.getenv("PHOTO_PROXY_BASE") or "").rstrip("/")
     if not base or not place_id:
         return None
-    return f"{base}/photo/{place_id}"
+    return f"{base}/photo/{place_id}?v={PHOTO_URL_VERSION}"
 
 
 def _download(url: str) -> Optional[Tuple[bytes, str]]:
@@ -177,7 +188,7 @@ def _download(url: str) -> Optional[Tuple[bytes, str]]:
     return resp.content, content_type
 
 
-def fetch_photo(place_id: str) -> Optional[Tuple[bytes, str]]:
+def fetch_photo(place_id: str) -> Optional[Tuple[bytes, str, bool]]:
     """
     取得店家照片的位元組內容，供 /photo 端點直接回傳給 LINE。
 
@@ -192,17 +203,19 @@ def fetch_photo(place_id: str) -> Optional[Tuple[bytes, str]]:
 
     Returns
     -------
-    Optional[Tuple[bytes, str]]
-        (圖片位元組, Content-Type)；店家照片與預設圖都取不到時回傳 None。
+    Optional[Tuple[bytes, str, bool]]
+        (圖片位元組, Content-Type, 是否為回退的預設圖)；連預設圖都取不到時
+        回傳 None。第三個值供端點決定快取策略：回退結果**絕不可被快取**，
+        否則該店家會被鎖在預設圖直到快取到期。
     """
     url = resolve_photo_url(place_id)
     if url:
         image = _download(url)
         if image:
-            return image
+            return image[0], image[1], False
 
-    # 走到這裡代表兩種可能：簽章網址在記憶體快取期間內就失效，或是**存起來的
-    # photo_name 本身已失效**（店家換照片／照片遭移除／Google 調整 ID，Media
+    # 走到這裡代表兩種可能：簽章網址在記憶體快取期間內就失效，或是存起來的
+    # 照片資源名稱本身已失效（店家換照片／照片遭移除／Google 調整 ID，Media
     # 端點回 400）。後者若不強制重取，該店家會永久卡在預設圖而無法自我修復。
     _url_cache.pop(place_id, None)
     url = resolve_photo_url(place_id, force_refresh=True)
@@ -210,7 +223,8 @@ def fetch_photo(place_id: str) -> Optional[Tuple[bytes, str]]:
         image = _download(url)
         if image:
             print(f"{GREEN}STEP: {place_id} 已重新取得有效照片{RESET}")
-            return image
+            return image[0], image[1], False
 
-    print(f"{YELLOW}STEP: {place_id} 取不到店家照片，改用預設圖{RESET}")
-    return _download(DEFAULT_PHOTO_URL)
+    print(f"{YELLOW}STEP: {place_id} 取不到店家照片，改用預設圖（不快取）{RESET}")
+    fallback = _download(DEFAULT_PHOTO_URL)
+    return (fallback[0], fallback[1], True) if fallback else None
