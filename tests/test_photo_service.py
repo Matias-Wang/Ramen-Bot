@@ -195,7 +195,9 @@ class TestFetchPhoto:
     """LINE 載入 hero 圖時不跟隨轉址，故端點必須自行取回位元組。"""
 
     def _stub_resolve(self, monkeypatch, url):
-        monkeypatch.setattr(photo_service, "resolve_photo_url", lambda pid: url)
+        monkeypatch.setattr(
+            photo_service, "resolve_photo_url", lambda pid, force_refresh=False: url
+        )
 
     def test_returns_image_bytes(self, monkeypatch):
         self._stub_resolve(monkeypatch, _SIGNED_URL)
@@ -222,7 +224,7 @@ class TestFetchPhoto:
         """快取內的簽章網址已失效時，清快取重解析一次再試。"""
         calls = {"resolve": 0, "get": 0}
 
-        def _resolve(pid):
+        def _resolve(pid, force_refresh=False):
             calls["resolve"] += 1
             return _SIGNED_URL
 
@@ -256,3 +258,63 @@ class TestFetchPhoto:
 
         monkeypatch.setattr(photo_service.requests, "get", _boom)
         assert photo_service.fetch_photo(_PLACE_ID) is None
+
+
+class TestStalePhotoNameSelfHealing:
+    """存起來的 photo_name 失效時（Media 回 400）必須能自我修復，
+    否則該店家會永久卡在預設圖。"""
+
+    def test_stale_photo_name_is_refreshed_and_persisted(self, monkeypatch):
+        stale, fresh = "places/x/photos/STALE", "places/x/photos/FRESH"
+        shop = {"place_id": _PLACE_ID, "name": "換過照片的店", "photo_name": stale}
+
+        class _Gmaps:
+            def __init__(self):
+                self.name_calls = 0
+
+            def get_photo_name_by_place_id(self, pid):
+                self.name_calls += 1
+                return fresh
+
+            def get_photo_url(self, photo_name, *a, **k):
+                # 失效的 photo_name 換不到網址（實測 Media 端點回 400）
+                return None if photo_name == stale else _SIGNED_URL
+
+        gmaps = _Gmaps()
+        monkeypatch.setattr(search_skill, "_get_gmaps", lambda: gmaps)
+        monkeypatch.setattr(search_skill, "_load_all_shops", lambda: [shop])
+        persisted = []
+        monkeypatch.setattr(
+            search_skill,
+            "persist_shop_summary",
+            lambda s, f, v: persisted.append((f, v)),
+        )
+        monkeypatch.setattr(
+            photo_service.requests, "get", lambda *a, **k: _FakeResp()
+        )
+
+        assert photo_service.fetch_photo(_PLACE_ID) == (b"JPEGBYTES", "image/jpeg")
+        # 已強制重取並覆寫，下次請求即可直接命中新的 photo_name
+        assert gmaps.name_calls == 1
+        assert persisted == [("photo_name", fresh)]
+
+    def test_shop_with_no_photo_at_all_falls_back(self, monkeypatch):
+        """店家在 Google 上根本沒有照片時，退回預設圖而非無限重試。"""
+        shop = {"place_id": _PLACE_ID, "name": "沒照片的店", "photo_name": "places/x/photos/GONE"}
+
+        class _Gmaps:
+            def get_photo_name_by_place_id(self, pid):
+                return None
+
+            def get_photo_url(self, photo_name, *a, **k):
+                return None
+
+        monkeypatch.setattr(search_skill, "_get_gmaps", lambda: _Gmaps())
+        monkeypatch.setattr(search_skill, "_load_all_shops", lambda: [shop])
+        monkeypatch.setattr(
+            photo_service.requests,
+            "get",
+            lambda url, *a, **k: _FakeResp(content=b"DEFAULT"),
+        )
+
+        assert photo_service.fetch_photo(_PLACE_ID) == (b"DEFAULT", "image/jpeg")
