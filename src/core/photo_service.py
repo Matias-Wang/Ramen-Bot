@@ -51,7 +51,7 @@ PHOTO_MAX_HEIGHT_PX = 800
 _DOWNLOAD_TIMEOUT = 10.0
 
 
-def _lookup_photo_name(place_id: str) -> Optional[str]:
+def _lookup_photo_name(place_id: str, force_refresh: bool = False) -> Optional[str]:
     """
     取得店家照片的資源名稱，優先使用店家資料中已存的 `photo_name`。
 
@@ -62,6 +62,10 @@ def _lookup_photo_name(place_id: str) -> Optional[str]:
     ----------
     place_id : str
         Google Places 店家 ID。
+    force_refresh : bool
+        忽略已存的 `photo_name`，強制重新向 Places 取得並覆寫。供已存的
+        `photo_name` 失效（店家換照片／照片遭移除／Google 調整 ID，Media
+        端點回 400）時自我修復使用。
 
     Returns
     -------
@@ -74,7 +78,7 @@ def _lookup_photo_name(place_id: str) -> Optional[str]:
     shop = next(
         (s for s in _load_all_shops() if s.get("place_id") == place_id), None
     )
-    if shop:
+    if shop and not force_refresh:
         cached = (shop.get("photo_name") or "").strip()
         if cached:
             return cached
@@ -86,7 +90,7 @@ def _lookup_photo_name(place_id: str) -> Optional[str]:
     return photo_name
 
 
-def resolve_photo_url(place_id: str) -> Optional[str]:
+def resolve_photo_url(place_id: str, force_refresh: bool = False) -> Optional[str]:
     """
     解析出指定店家當下有效的照片簽章網址。
 
@@ -94,6 +98,9 @@ def resolve_photo_url(place_id: str) -> Optional[str]:
     ----------
     place_id : str
         Google Places 店家 ID。
+    force_refresh : bool
+        略過記憶體快取，並強制重新取得 `photo_name`。供既有 `photo_name`
+        已失效時的自我修復路徑使用。
 
     Returns
     -------
@@ -105,12 +112,13 @@ def resolve_photo_url(place_id: str) -> Optional[str]:
         return None
 
     now = time.time()
-    cached = _url_cache.get(place_id)
-    if cached and now < cached[1]:
-        return cached[0]
+    if not force_refresh:
+        cached = _url_cache.get(place_id)
+        if cached and now < cached[1]:
+            return cached[0]
 
     try:
-        photo_name = _lookup_photo_name(place_id)
+        photo_name = _lookup_photo_name(place_id, force_refresh=force_refresh)
         if not photo_name:
             return None
 
@@ -192,13 +200,17 @@ def fetch_photo(place_id: str) -> Optional[Tuple[bytes, str]]:
         image = _download(url)
         if image:
             return image
-        # 簽章網址剛好在快取期間內失效：清掉重解析一次，避免整段 TTL 都壞圖
-        _url_cache.pop(place_id, None)
-        url = resolve_photo_url(place_id)
-        if url:
-            image = _download(url)
-            if image:
-                return image
+
+    # 走到這裡代表兩種可能：簽章網址在記憶體快取期間內就失效，或是**存起來的
+    # photo_name 本身已失效**（店家換照片／照片遭移除／Google 調整 ID，Media
+    # 端點回 400）。後者若不強制重取，該店家會永久卡在預設圖而無法自我修復。
+    _url_cache.pop(place_id, None)
+    url = resolve_photo_url(place_id, force_refresh=True)
+    if url:
+        image = _download(url)
+        if image:
+            print(f"{GREEN}STEP: {place_id} 已重新取得有效照片{RESET}")
+            return image
 
     print(f"{YELLOW}STEP: {place_id} 取不到店家照片，改用預設圖{RESET}")
     return _download(DEFAULT_PHOTO_URL)
