@@ -26,6 +26,8 @@ import os
 import time
 from typing import Dict, Optional, Tuple
 
+import requests
+
 # <使用者自訂變數>
 RED = "\033[91m"
 YELLOW = "\033[93m"
@@ -45,6 +47,8 @@ _URL_CACHE_MAX = 500
 _url_cache: Dict[str, Tuple[str, float]] = {}
 
 PHOTO_MAX_HEIGHT_PX = 800
+# 下載圖片位元組的逾時秒數（此路徑不在使用者等待回覆的路徑上，可略寬鬆）
+_DOWNLOAD_TIMEOUT = 10.0
 
 
 def _lookup_photo_name(place_id: str) -> Optional[str]:
@@ -149,3 +153,52 @@ def photo_proxy_url(place_id: Optional[str]) -> Optional[str]:
     if not base or not place_id:
         return None
     return f"{base}/photo/{place_id}"
+
+
+def _download(url: str) -> Optional[Tuple[bytes, str]]:
+    """下載圖片位元組；非 200、非圖片或連線失敗一律回傳 None。"""
+    try:
+        resp = requests.get(url, timeout=_DOWNLOAD_TIMEOUT)
+    except requests.RequestException as e:
+        print(f"{RED}STEP ERROR: 下載圖片失敗: {e}{RESET}")
+        return None
+    content_type = resp.headers.get("Content-Type", "")
+    if resp.status_code != 200 or not content_type.startswith("image/"):
+        print(f"{YELLOW}STEP: 圖片來源回應異常（{resp.status_code} / {content_type}）{RESET}")
+        return None
+    return resp.content, content_type
+
+
+def fetch_photo(place_id: str) -> Optional[Tuple[bytes, str]]:
+    """
+    取得店家照片的位元組內容，供 /photo 端點直接回傳給 LINE。
+
+    **必須自行回傳位元組，不能用 302 轉址**：實測 LINE 客戶端載入 Flex Message
+    的 hero 圖時不會跟隨轉址，收到 302 即停止，導致圖片完全不顯示（連轉址至
+    預設圖也同樣無效）。
+
+    Parameters
+    ----------
+    place_id : str
+        Google Places 店家 ID。
+
+    Returns
+    -------
+    Optional[Tuple[bytes, str]]
+        (圖片位元組, Content-Type)；店家照片與預設圖都取不到時回傳 None。
+    """
+    url = resolve_photo_url(place_id)
+    if url:
+        image = _download(url)
+        if image:
+            return image
+        # 簽章網址剛好在快取期間內失效：清掉重解析一次，避免整段 TTL 都壞圖
+        _url_cache.pop(place_id, None)
+        url = resolve_photo_url(place_id)
+        if url:
+            image = _download(url)
+            if image:
+                return image
+
+    print(f"{YELLOW}STEP: {place_id} 取不到店家照片，改用預設圖{RESET}")
+    return _download(DEFAULT_PHOTO_URL)

@@ -179,3 +179,80 @@ class TestResolvePhotoUrl:
         monkeypatch.setattr(search_skill, "_load_all_shops", lambda: [])
 
         assert resolve_photo_url(_PLACE_ID) is None
+
+
+# ─── fetch_photo（串流代理：必須回位元組，不可用 302） ─────────────────────────
+
+
+class _FakeResp:
+    def __init__(self, status_code=200, content=b"JPEGBYTES", content_type="image/jpeg"):
+        self.status_code = status_code
+        self.content = content
+        self.headers = {"Content-Type": content_type}
+
+
+class TestFetchPhoto:
+    """LINE 載入 hero 圖時不跟隨轉址，故端點必須自行取回位元組。"""
+
+    def _stub_resolve(self, monkeypatch, url):
+        monkeypatch.setattr(photo_service, "resolve_photo_url", lambda pid: url)
+
+    def test_returns_image_bytes(self, monkeypatch):
+        self._stub_resolve(monkeypatch, _SIGNED_URL)
+        monkeypatch.setattr(
+            photo_service.requests, "get", lambda *a, **k: _FakeResp()
+        )
+        assert photo_service.fetch_photo(_PLACE_ID) == (b"JPEGBYTES", "image/jpeg")
+
+    def test_falls_back_to_default_image_when_no_url(self, monkeypatch):
+        """解析不到店家照片時改抓預設圖，仍回傳位元組（不可回轉址）。"""
+        self._stub_resolve(monkeypatch, None)
+        requested = []
+
+        def _get(url, *a, **k):
+            requested.append(url)
+            return _FakeResp(content=b"DEFAULT")
+
+        monkeypatch.setattr(photo_service.requests, "get", _get)
+
+        assert photo_service.fetch_photo(_PLACE_ID) == (b"DEFAULT", "image/jpeg")
+        assert requested == [photo_service.DEFAULT_PHOTO_URL]
+
+    def test_stale_cached_url_triggers_single_reresolve(self, monkeypatch):
+        """快取內的簽章網址已失效時，清快取重解析一次再試。"""
+        calls = {"resolve": 0, "get": 0}
+
+        def _resolve(pid):
+            calls["resolve"] += 1
+            return _SIGNED_URL
+
+        def _get(url, *a, **k):
+            calls["get"] += 1
+            # 第一次視為已失效（403），重解析後第二次成功
+            return _FakeResp(403, b"", "text/html") if calls["get"] == 1 else _FakeResp()
+
+        monkeypatch.setattr(photo_service, "resolve_photo_url", _resolve)
+        monkeypatch.setattr(photo_service.requests, "get", _get)
+
+        assert photo_service.fetch_photo(_PLACE_ID) == (b"JPEGBYTES", "image/jpeg")
+        assert calls["resolve"] == 2
+        assert calls["get"] == 2
+
+    def test_non_image_content_type_rejected(self, monkeypatch):
+        """回應非圖片（例如錯誤頁）時不可當成圖片回傳。"""
+        self._stub_resolve(monkeypatch, None)
+        monkeypatch.setattr(
+            photo_service.requests,
+            "get",
+            lambda *a, **k: _FakeResp(200, b"<html>", "text/html"),
+        )
+        assert photo_service.fetch_photo(_PLACE_ID) is None
+
+    def test_download_exception_returns_none(self, monkeypatch):
+        self._stub_resolve(monkeypatch, None)
+
+        def _boom(*a, **k):
+            raise photo_service.requests.RequestException("網路壞了")
+
+        monkeypatch.setattr(photo_service.requests, "get", _boom)
+        assert photo_service.fetch_photo(_PLACE_ID) is None
