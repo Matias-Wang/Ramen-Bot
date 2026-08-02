@@ -22,6 +22,13 @@
 - **Field Masking**：Places API (New) 僅抓取 `rating, userRatingCount, formattedAddress, photos` 欄位以控管成本。
 - **Flex Handler 規範**：嚴格執行索引配對，禁止生成空盒子 (`contents: []`)，確保型別安全。
 - **逾時應對**：針對 1 秒 Webhook 限制，`handle_message` 立即啟動背景 `threading.Thread` 返回 200，AI 邏輯在背景完成後以 `push_message` 回覆（取代有 60 秒限制的 `reply_message`）。
+  - ⚠️ **部署前提**：此設計要求 Cloud Run 必須設定 **CPU 常駐**（`--no-cpu-throttling`）。
+    Cloud Run 預設只在「處理請求期間」配置 CPU，而本架構刻意讓請求立即結束、把工作
+    留在背景執行緒，兩者衝突會使所有網路 I/O 慢 30~400 倍（實測端到端曾達 248 秒）。
+    此旗標已寫入 `.github/workflows/deploy.yml`，不可移除。
+- **照片時效**：Places API 回傳的照片網址有時效性，會逐筆失效。回覆前以 HEAD 檢查
+  存活（不呼叫任何 API）、過期改用預設圖，**回覆送出後**才呼叫 API 更新網址並記錄
+  `image_url_renew_date`。詳見 `ARCHITECTURE.md`。
 - **每日配額保護**：`usage_tracker.py` 在每次呼叫前檢查 Google Maps、Gemini、LINE API 的每日上限。
 
 ### Google Maps API 相關服務
