@@ -10,7 +10,6 @@ import random
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
-import requests
 from google import genai
 from google.genai import types
 
@@ -35,17 +34,14 @@ USE_FIRESTORE = os.getenv("DATA_BACKEND", "local") == "firestore"
 _CACHE_TTL_SECONDS = 86400  # Firestore 店家快取 24 小時
 _shops_cache: List[Dict[str, Any]] = []
 _shops_cache_time: float = 0.0
+# 背景刷新狀態旗標：確保快取過期時同一時間只有一個刷新執行緒
+_shops_refreshing: bool = False
+_refresh_lock = threading.Lock()
 # Geocoding 記憶體快取（process 內，最快）。生產模式另有 Firestore 共用層。
 _geocode_cache: Dict[str, Optional[Dict[str, float]]] = {}
 # Firestore 共用 Geocoding 快取 collection：地名→座標幾乎不變，跨 worker/
 # 重啟持久化，減少重複的 Geocoding API 呼叫與配額消耗。
 _GEOCODE_COLLECTION = "geocode_cache"
-# 圖片存活狀態短期快取（A2 延遲優化）：同一 image_url 於 TTL 內重複顯示時
-# 略過 HEAD 檢查，避免每次查詢都付出 HEAD 往返延遲。只快取「存活」結果，
-# 且 TTL 短（簽章網址仍可能在 TTL 內過期，故不宜長）。url -> 到期時戳。
-_IMAGE_ALIVE_TTL_SECONDS = 300
-_IMAGE_ALIVE_CACHE_MAX = 2000
-_image_alive_cache: Dict[str, float] = {}
 _gmaps_instance: Optional[GoogleMapsService] = None
 
 # 推薦文用的 Gemini client pool（預熱 3 個獨立實例，確保並行不序列化）
@@ -94,156 +90,96 @@ def init_rec_client_pool(api_key: str, model_name: str, pool_size: int = 3) -> N
     print(f"{GREEN}[STARTUP] Gemini Client Pool 初始化並預熱完成（{pool_size} 個實例）{RESET}")
 
 
-def _load_all_shops() -> List[Dict[str, Any]]:
+def _fetch_all_shops() -> List[Dict[str, Any]]:
     """
-    讀取全部店家資料，Firestore 結果快取 24 小時（_CACHE_TTL_SECONDS）以減少
-    gRPC 呼叫次數。runtime 寫回（persist_shop_summary）會同步更新記憶體快取；
-    外部（migration/腳本）更新 Firestore 後，線上 worker 最長需一個 TTL 週期或
-    重啟才會看到，屬已知取捨。
+    實際從資料源讀取全部店家（Firestore 或本地 JSON），不經過快取。
 
     Returns
     -------
     List[Dict[str, Any]]
-        店家清單。
+        店家清單；讀取失敗時回傳空清單（由呼叫端決定是否沿用舊快取）。
     """
-    global _shops_cache, _shops_cache_time
-    now = time.time()
-
-    if _shops_cache and (now - _shops_cache_time) < _CACHE_TTL_SECONDS:
-        print(f"{CYAN}[CACHE] 使用 Firestore 店家快取（剩餘 "
-              f"{int(_CACHE_TTL_SECONDS - (now - _shops_cache_time))} 秒）{RESET}")
-        return _shops_cache
-
     if USE_FIRESTORE:
         try:
             from services.firestore_client import get_db
             _t_fs = time.time()
             db = get_db()
             fetched = [doc.to_dict() for doc in db.collection("ramen_shops").stream()]
-            _shops_cache = fetched
-            _shops_cache_time = time.time()
-            print(f"{GREEN}STEP: Firestore 讀取完成，共 {len(_shops_cache)} 筆，"
+            print(f"{GREEN}STEP: Firestore 讀取完成，共 {len(fetched)} 筆，"
                   f"耗時 {time.time() - _t_fs:.1f}s{RESET}")
+            return fetched
         except Exception as e:
             print(f"{RED}STEP ERROR: Firestore 讀取失敗: {e}{RESET}")
-            return _shops_cache if _shops_cache else []
-    else:
-        data_path = os.path.join("data", "ramen_data.json")
-        try:
-            with open(data_path, "r", encoding="utf-8") as f:
-                _shops_cache = json.load(f)
-            _shops_cache_time = time.time()
-        except FileNotFoundError:
-            print(f"{RED}STEP ERROR: 找不到 {data_path} 檔案{RESET}")
             return []
 
-    return _shops_cache
-
-
-def _is_image_url_alive(url: str, timeout: float = 3.0) -> bool:
-    """
-    對圖片網址發 HEAD request，確認是否仍可載入。
-
-    Google Places API 回傳的 photoUri 是有時效性的簽章網址，過期後仍是合法
-    的 https 格式，但實際請求會回 403，僅靠字串判斷無法得知是否已失效。
-
-    Parameters
-    ----------
-    url : str
-        要檢查的圖片網址。
-    timeout : float
-        逾時秒數，預設 3 秒（此檢查在使用者等待回覆的路徑上執行，須夠快）。
-
-    Returns
-    -------
-    bool
-        HTTP 狀態碼為 200 回傳 True；逾時、連線失敗或非 200 一律視為失效。
-    """
-    # 短期存活快取命中：TTL 內同一網址略過 HEAD，省去使用者等待路徑上的往返。
-    now = time.time()
-    expiry = _image_alive_cache.get(url)
-    if expiry is not None and now < expiry:
-        return True
-
+    data_path = os.path.join("data", "ramen_data.json")
     try:
-        resp = requests.head(url, timeout=timeout, allow_redirects=True)
-        alive = resp.status_code == 200
-    except requests.RequestException:
-        alive = False
-
-    if alive:
-        # 僅快取存活結果（失效網址會走背景修復換新網址，不需快取）
-        if len(_image_alive_cache) >= _IMAGE_ALIVE_CACHE_MAX:
-            # 清掉已過期項，避免無限增長（同 message_dedup 的有上限策略）
-            for _u in [u for u, e in _image_alive_cache.items() if e <= now]:
-                _image_alive_cache.pop(_u, None)
-        _image_alive_cache[url] = now + _IMAGE_ALIVE_TTL_SECONDS
-    return alive
+        with open(data_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"{RED}STEP ERROR: 找不到 {data_path} 檔案{RESET}")
+        return []
 
 
-def _refresh_shop_image(shop: Dict[str, Any]) -> None:
-    """
-    背景執行緒：重新呼叫 Google Places API 取得新的照片網址並寫回資料源。
-
-    Fire-and-forget，任何失敗都只印出錯誤、不拋出，不影響已送出給使用者的回覆。
-
-    Parameters
-    ----------
-    shop : Dict[str, Any]
-        圖片網址已過期的店家資料字典（需含 place_id 才能查詢）。
-    """
-    place_id = shop.get("place_id")
-    name = shop.get("name") or "未知店名"
-    if not place_id:
-        return
+def _refresh_shops_cache() -> None:
+    """背景刷新店家快取；讀取失敗則保留既有快取，等下次再試。"""
+    global _shops_cache, _shops_cache_time, _shops_refreshing
     try:
-        new_url = _get_gmaps().get_photo_by_place_id(place_id)
+        fetched = _fetch_all_shops()
+        if fetched:
+            _shops_cache = fetched
+            _shops_cache_time = time.time()
+            print(f"{GREEN}STEP: 背景刷新店家快取完成，共 {len(fetched)} 筆{RESET}")
     except Exception as e:
-        print(f"{RED}STEP ERROR: 背景重新取得 {name} 圖片失敗: {e}{RESET}")
-        return
-    if not new_url:
-        print(f"{YELLOW}STEP: 背景查無 {name} 的新照片{RESET}")
-        return
-    persist_shop_summary(shop, "image_url", new_url)
-    print(f"{GREEN}STEP: 已在背景修復 {name} 的圖片網址{RESET}")
+        print(f"{RED}STEP ERROR: 背景刷新店家快取失敗: {e}{RESET}")
+    finally:
+        with _refresh_lock:
+            _shops_refreshing = False
 
 
-def resolve_shop_images(shops: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _load_all_shops() -> List[Dict[str, Any]]:
     """
-    在組裝 Flex Message 前，平行檢查店家圖片網址是否仍存活，過期的先退回
-    預設圖並在背景修復，避免使用者看到空白圖片。
+    讀取全部店家資料，結果快取 _CACHE_TTL_SECONDS（24 小時）以減少 gRPC 呼叫。
 
-    Parameters
-    ----------
-    shops : List[Dict[str, Any]]
-        即將顯示給使用者的店家清單（通常 ≤3 筆，回覆前的最後一步呼叫）。
+    採 stale-while-revalidate：快取過期時**先回傳舊資料**、把重新讀取丟到背景
+    執行緒，使用者的等待路徑上永遠不會出現整批 180 筆的重讀。只有行程啟動後
+    完全沒有快取時（app.py 的預熱）才會同步讀取。
+
+    runtime 寫回（persist_shop_summary）會同步更新記憶體快取；外部（migration/
+    腳本）更新資料源後，線上 worker 最長需一個 TTL 週期或重啟才會看到，屬已知取捨。
 
     Returns
     -------
     List[Dict[str, Any]]
-        淺複製後的店家清單；過期的 image_url 已置換為 None，讓
-        flex_handler 既有的 fallback 邏輯自動改用預設拉麵圖。
+        店家清單。
     """
-    if not shops:
-        return shops
+    global _shops_cache, _shops_cache_time, _shops_refreshing
+    now = time.time()
+    age = now - _shops_cache_time
 
-    urls = [s.get("image_url") for s in shops]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(shops)) as ex:
-        alive_flags = list(
-            ex.map(lambda u: _is_image_url_alive(u) if u else True, urls)
-        )
+    if _shops_cache and age < _CACHE_TTL_SECONDS:
+        print(f"{CYAN}[CACHE] 使用店家快取（剩餘 "
+              f"{int(_CACHE_TTL_SECONDS - age)} 秒）{RESET}")
+        return _shops_cache
 
-    resolved = []
-    for shop, url, alive in zip(shops, urls, alive_flags):
-        shop_copy = copy.copy(shop)
-        if url and not alive:
-            print(f"{YELLOW}STEP: {shop.get('name')} 圖片網址已過期，暫用預設圖{RESET}")
-            shop_copy["image_url"] = None
-            threading.Thread(
-                target=_refresh_shop_image, args=(shop,), daemon=True
-            ).start()
-        resolved.append(shop_copy)
-    return resolved
+    if _shops_cache:
+        # 已過期但仍有舊資料：立即回傳，刷新交給背景，不讓使用者承擔重讀延遲。
+        # _shops_refreshing 確保同一時間只有一個刷新執行緒。
+        with _refresh_lock:
+            should_start = not _shops_refreshing
+            if should_start:
+                _shops_refreshing = True
+        if should_start:
+            print(f"{YELLOW}[CACHE] 店家快取已過期，先回傳舊資料並於背景刷新{RESET}")
+            threading.Thread(target=_refresh_shops_cache, daemon=True).start()
+        return _shops_cache
+
+    # 完全無快取（行程啟動後首次讀取，由 app.py 預熱觸發，不在使用者路徑上）
+    fetched = _fetch_all_shops()
+    if fetched:
+        _shops_cache = fetched
+        _shops_cache_time = time.time()
+    return _shops_cache
 
 
 def _geocode_doc_id(location: str) -> str:

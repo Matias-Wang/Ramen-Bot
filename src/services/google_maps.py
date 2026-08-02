@@ -234,22 +234,23 @@ class GoogleMapsService:
             print(f"{RED}STEP ERROR: 驗證 {name} 失敗: {e}{RESET}")
             return None
 
-    def get_photo_by_place_id(self, place_id: str, max_height_px: int = 800) -> Optional[str]:
+    def get_photo_name_by_place_id(self, place_id: str) -> Optional[str]:
         """
-        Places API (New) Place Details：直接用 place_id 取得照片 CDN URL。
-        比 get_shop_details 少一次 Text Search API 呼叫，適合批次補全圖片。
+        Places API (New) Place Details：取得店家第一張照片的資源名稱。
+
+        photo_name（格式 `places/{place_id}/photos/{photo_id}`）本身**不會過期**，
+        適合持久化至資料庫；真正有時效的是 get_photo_url() 用它換回來的簽章網址。
+        兩者分開後，後續每次換新網址只需 1 次 Media 呼叫，不必重複查 Place Details。
 
         Parameters
         ----------
         place_id : str
             Google Places 店家 ID（格式：ChIJ...）。
-        max_height_px : int, optional
-            照片最大高度 (px)，預設為 800。
 
         Returns
         -------
         Optional[str]
-            照片 CDN URL，若失敗則回傳 None。
+            照片資源名稱，查無照片或失敗時回傳 None。
         """
         if not self.api_key:
             return None
@@ -265,17 +266,37 @@ class GoogleMapsService:
             }
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
-            data = response.json()
-            photos = data.get("photos", [])
+            photos = response.json().get("photos", [])
             if not photos:
                 return None
-            photo_name = photos[0].get("name")
-            if not photo_name:
-                return None
-            return self.get_photo_url(photo_name, max_height_px)
+            return photos[0].get("name")
         except Exception as e:
-            print(f"{RED}STEP ERROR: 用 place_id 取得照片失敗: {e}{RESET}")
+            print(f"{RED}STEP ERROR: 用 place_id 取得照片資源名稱失敗: {e}{RESET}")
             return None
+
+    def get_photo_by_place_id(self, place_id: str, max_height_px: int = 800) -> Optional[str]:
+        """
+        Places API (New)：直接用 place_id 取得照片 CDN URL（Details + Media 兩次呼叫）。
+
+        供離線批次腳本使用。回傳的是有時效的簽章網址，**不應長期持久化**
+        （見 services/photo_service.py 的說明）。
+
+        Parameters
+        ----------
+        place_id : str
+            Google Places 店家 ID（格式：ChIJ...）。
+        max_height_px : int, optional
+            照片最大高度 (px)，預設為 800。
+
+        Returns
+        -------
+        Optional[str]
+            照片 CDN URL，若失敗則回傳 None。
+        """
+        photo_name = self.get_photo_name_by_place_id(place_id)
+        if not photo_name:
+            return None
+        return self.get_photo_url(photo_name, max_height_px)
 
     def get_opening_hours_by_place_id(self, place_id: str) -> Optional[Dict[str, Any]]:
         """

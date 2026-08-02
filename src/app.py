@@ -7,7 +7,8 @@ import os
 import json
 import time
 import threading
-from flask import Flask, request, abort
+from typing import Any
+from flask import Flask, request, abort, redirect
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
@@ -26,10 +27,10 @@ from dotenv import load_dotenv
 from core.agent_router import AgentRouter
 from core.flex_handler import assemble_carousel, get_flex_bubble
 from core import timing
+from core.photo_service import DEFAULT_PHOTO_URL, resolve_photo_url
 from skills.Search_skill import (
     filter_by_location,
     generate_recommendations,
-    resolve_shop_images,
 )
 from core.message_dedup import is_duplicate_message
 from core.usage_tracker import check_and_increment
@@ -125,6 +126,18 @@ if os.getenv("DATA_BACKEND", "local") == "firestore":
         print(f"{YELLOW}[STARTUP] Firestore 心跳啟動失敗（非致命）: {e}{RESET}")
 
 
+@app.route("/photo/<place_id>", methods=['GET'])
+def photo(place_id: str) -> Any:
+    """
+    店家照片代理：302 導向當下有效的 Google Places 簽章網址。
+
+    Flex Message 中放的是本端點的固定網址，因此 LINE 聊天記錄中的舊訊息
+    也能永遠正常顯示圖片（Places 回傳的簽章網址本身會過期）。解析失敗時
+    導向預設拉麵圖，確保永遠不會出現破圖。
+    """
+    return redirect(resolve_photo_url(place_id) or DEFAULT_PHOTO_URL, code=302)
+
+
 @app.route("/callback", methods=['POST'])
 def callback() -> str:
     """
@@ -169,7 +182,7 @@ def _reply_to_line(
         print(f"{CYAN}[TIMER] dispatch 完成，耗時 {time.time() - _t_start:.1f}s{RESET}")
 
         intent = result.get('intent')
-        data = resolve_shop_images(result.get('data', []))
+        data = result.get('data', [])
         recommendations = result.get('recommendations', [])
         ui_tag = result.get('ui_tag')
 
@@ -324,7 +337,6 @@ def _reply_location(
         recommendations = generate_recommendations(
             results, router.client, router.model_name, num_shops=len(results)
         )
-        results = resolve_shop_images(results)
         carousel_contents = assemble_carousel(results, recommendations)
         flex = FlexSendMessage(alt_text="附近的拉麵推薦", contents=carousel_contents)
         check_and_increment("line_api")
@@ -424,7 +436,6 @@ if __name__ == "__main__":
 
             print(f"{GREEN}STEP 2: 執行對應 Skill 並獲取資料 (Intent: {res['intent']})...{RESET}")
             print(f"  - 找到店家數量: {len(res.get('data', []))}")
-            res['data'] = resolve_shop_images(res.get('data') or [])
 
             if res.get('recommendations'):
                 print(f"{GREEN}STEP 3: 正在生成 AI 推薦文案...{RESET}")

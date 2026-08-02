@@ -10,6 +10,10 @@ COPY . .
 WORKDIR /app/src
 
 ENV PORT=8080
+# 不緩衝 stdout：確保 print() 立即進入 Cloud Logging，時間戳才等於實際發生時刻。
+# 正式服務目前也在 Cloud Run 環境變數設了同一項，此處宣告是為了讓 image 自給自足，
+# 避免換部署環境時漏掉而使日誌時序失真。
+ENV PYTHONUNBUFFERED=1
 
 # --timeout 120：webhook 立即回 200、實際工作在背景 daemon thread，請求本身
 # 極快，120s 上限足以回收真正卡死的請求執行緒（原 --timeout 0 永不回收，可能
