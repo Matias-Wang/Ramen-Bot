@@ -3,8 +3,20 @@
 涵蓋：單一 Bubble 生成、Carousel 組裝。
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
-from core.flex_handler import get_flex_bubble, assemble_carousel
+from core.flex_handler import get_flex_bubble, assemble_carousel, _format_opening_hours
+
+TZ = timezone(timedelta(hours=8))
+
+
+def _period(open_day, open_hour, open_minute, close_day, close_hour, close_minute):
+    """建立一筆 Places API 原生結構的營業時段。"""
+    return {
+        "open": {"day": open_day, "hour": open_hour, "minute": open_minute},
+        "close": {"day": close_day, "hour": close_hour, "minute": close_minute},
+    }
 
 
 # ─── 測試輔助 ──────────────────────────────────────────────────────────────────
@@ -125,6 +137,122 @@ class TestGetFlexBubble:
         bubble = get_flex_bubble(_make_shop(name=None))
         map_button = bubble["footer"]["contents"][0]
         assert isinstance(map_button["action"]["uri"], str)
+
+
+# ─── _format_opening_hours ─────────────────────────────────────────────────────
+
+class TestFormatOpeningHours:
+    # 週一 12:00 / 週一 22:00 / 週日 01:00 / 週日 05:00
+    _MON_NOON = datetime(2026, 8, 10, 12, 0, tzinfo=TZ)
+    _MON_NIGHT = datetime(2026, 8, 10, 22, 0, tzinfo=TZ)
+    _SUN_1AM = datetime(2026, 8, 9, 1, 0, tzinfo=TZ)
+    _SUN_5AM = datetime(2026, 8, 9, 5, 0, tzinfo=TZ)
+
+    def test_no_data_returns_none(self):
+        assert _format_opening_hours(None, self._MON_NOON) is None
+        assert _format_opening_hours({}, self._MON_NOON) is None
+        assert _format_opening_hours({"periods": []}, self._MON_NOON) is None
+
+    def test_split_periods_joined(self):
+        """下午有休息 → 兩段以「、」串接。"""
+        hours = {"periods": [
+            _period(1, 11, 0, 1, 14, 0),
+            _period(1, 17, 0, 1, 22, 0),
+        ]}
+        assert _format_opening_hours(hours, self._MON_NOON) == "🕒 11:00-14:00、17:00-22:00"
+
+    def test_single_period(self):
+        """下午不休息 → 單一時段。"""
+        hours = {"periods": [_period(1, 11, 0, 1, 20, 0)]}
+        assert _format_opening_hours(hours, self._MON_NOON) == "🕒 11:00-20:00"
+
+    def test_same_text_regardless_of_current_time(self):
+        """只呈現時段，不因當下已打烊而改變顯示內容。"""
+        hours = {"periods": [_period(1, 11, 0, 1, 14, 0)]}
+        assert (
+            _format_opening_hours(hours, self._MON_NOON)
+            == _format_opening_hours(hours, self._MON_NIGHT)
+            == "🕒 11:00-14:00"
+        )
+
+    def test_other_days_periods_excluded(self):
+        """只列出今日（週一）的時段，週二的不應出現。"""
+        hours = {"periods": [
+            _period(1, 11, 0, 1, 14, 0),
+            _period(2, 18, 0, 2, 21, 0),
+        ]}
+        assert _format_opening_hours(hours, self._MON_NOON) == "🕒 11:00-14:00"
+
+    def test_day_off_when_no_period_today(self):
+        hours = {"periods": [_period(2, 11, 0, 2, 14, 0)]}
+        assert _format_opening_hours(hours, self._MON_NOON) == "🕒 今日公休"
+
+    def test_cross_midnight_period_listed_on_open_day(self):
+        """跨午夜時段歸屬於開始營業那天（週一 22:00 顯示 22:00-02:00）。"""
+        hours = {"periods": [_period(1, 22, 0, 2, 2, 0)]}
+        assert _format_opening_hours(hours, self._MON_NIGHT) == "🕒 22:00-02:00"
+
+    def test_cross_midnight_carry_over_counts_as_today(self):
+        """週六 22:00–週日 02:00，週日 01:00 仍在營業中，不可顯示為今日公休。"""
+        hours = {"periods": [_period(6, 22, 0, 0, 2, 0)]}
+        assert _format_opening_hours(hours, self._SUN_1AM) == "🕒 22:00-02:00"
+
+    def test_cross_midnight_after_close_is_day_off(self):
+        """同上店家，週日 05:00 已過打烊時間且今日無時段 → 今日公休。"""
+        hours = {"periods": [_period(6, 22, 0, 0, 2, 0)]}
+        assert _format_opening_hours(hours, self._SUN_5AM) == "🕒 今日公休"
+
+    def test_24h_shop(self):
+        """Places API 在 24 小時營業時省略 close 欄位。"""
+        hours = {"periods": [{"open": {"day": 0, "hour": 0, "minute": 0}}]}
+        assert _format_opening_hours(hours, self._MON_NOON) == "🕒 24 小時營業"
+
+
+# ─── Bubble 上的營業時間呈現 ───────────────────────────────────────────────────
+
+class TestBubbleOpeningHours:
+    _HOURS = {"periods": [
+        {"open": {"day": d, "hour": 11, "minute": 0},
+         "close": {"day": d, "hour": 21, "minute": 0}}
+        for d in range(7)
+    ]}
+
+    def test_hours_line_rendered(self):
+        bubble = get_flex_bubble(_make_shop(opening_hours=self._HOURS))
+        body_texts = [c.get("text", "") for c in bubble["body"]["contents"]]
+        assert any("11:00-21:00" in t for t in body_texts)
+
+    def test_no_hours_line_when_no_data(self):
+        bubble = get_flex_bubble(_make_shop())
+        body_texts = [c.get("text", "") for c in bubble["body"]["contents"]]
+        assert not any("🕒" in t for t in body_texts)
+
+    def test_hours_placed_before_separator(self):
+        """營業時間應在分隔線之前（推薦文之上），不打斷既有版面順序。"""
+        bubble = get_flex_bubble(_make_shop(opening_hours=self._HOURS))
+        contents = bubble["body"]["contents"]
+        sep_index = next(i for i, c in enumerate(contents) if c["type"] == "separator")
+        hours_index = next(
+            i for i, c in enumerate(contents) if "11:00-21:00" in c.get("text", "")
+        )
+        assert hours_index == sep_index - 1
+
+    def test_recommendation_still_aligned_with_rating(self):
+        """有評分時，插入營業時間不應打亂推薦文的配對。"""
+        shop = _make_shop(rating=4.5, user_ratings_total=100, opening_hours=self._HOURS)
+        bubble = get_flex_bubble(shop, recommendation="濃厚豚骨必吃。")
+        body_texts = [c.get("text", "") for c in bubble["body"]["contents"]]
+        assert any("⭐ 4.5" in t for t in body_texts)
+        assert any("濃厚豚骨必吃。" == t for t in body_texts)
+        assert any("台北市信義路五段7號" == t for t in body_texts)
+
+    def test_recommendation_still_aligned_without_rating(self):
+        """無評分時（body 少一列），插入營業時間同樣不應打亂配對。"""
+        shop = _make_shop(opening_hours=self._HOURS)
+        bubble = get_flex_bubble(shop, recommendation="清爽鹽味湯頭。")
+        body_texts = [c.get("text", "") for c in bubble["body"]["contents"]]
+        assert any("清爽鹽味湯頭。" == t for t in body_texts)
+        assert any("台北市信義路五段7號" == t for t in body_texts)
 
 
 # ─── assemble_carousel ─────────────────────────────────────────────────────────
