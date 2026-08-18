@@ -41,6 +41,6 @@ knowledge/
 # 規劃紀錄
 CR/
 
-# SLM參考資料
-SLM參考/
+# SLM 工作區（參考資料、合成資料集、LoRA adapter、量化權重、notebook），一律不進版控
+SLM/
 

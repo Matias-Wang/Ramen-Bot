@@ -470,3 +470,59 @@ CPU 常駐改以實例生命週期計費，`min-instances=1`、1 vCPU / 1GiB 常
 
 > 註：本檔案 2026-07-09 ~ 2026-07-30 期間的項目（AI 摘要快取、效能計時 KPI、
 > 高風險漏洞修補 H1~H4、Geocoding 快取下沉、A2/A4）尚未補寫，進度詳見 `PENDING.md`。
+
+---
+
+## 2026-08-02 — 修復店家照片 93% 顯示預設圖，並建立網址壽命觀測機制
+
+### 修正
+- **照片機制重做**。使用者回報 LINE 上多數店家顯示預設圖，逐筆 HEAD 檢查確認
+  正式環境 180 筆中 **168 筆已失效（93.3%）**、本地 179 筆中 160 筆失效。
+- **離線批次補齊**：`scripts/update_api_data.py --update-photos` 一次補全 155 筆
+  （成功 155／失敗 0），同步 Firestore 177 筆異動，存活率 **6.7% → 99.4%**。
+
+### 根因
+`services/google_maps.py` 的 `get_photo_url()` 以 `skipHttpRedirect=true` 取回的
+`photoUri` 是**有時效的簽章網址**，卻被當成永久網址寫入 `image_url` 持久化，
+因此每一筆遲早都會 403。既有的「HEAD 檢查 + 背景換新網址」補救無法收斂——換回來的
+仍是另一個會過期的簽章網址；且該背景修復在 2026-08-01 修好 CPU throttling 之前
+每次都因 `SSL: UNEXPECTED_EOF` 失敗，從未真正運作過。
+
+### 新增
+- **`image_url_renew_date` 欄位**：記錄網址取得時刻（UTC ISO 8601 帶時區），
+  供觀測簽章網址的實際存活時間。Google 未公開此壽命，且實測顯示**不是固定 TTL**
+  （勝王 34.7h 已死，但同時段寫入的滿雞軒／誠屋拉麵 34.5h 仍存活，更早 3.7 天的
+  烹星／隱家拉麵也存活），故需累積分布才能決定刷新策略。
+- **`scripts/check_image_url_lifetime.py`**：壽命觀測工具，輸出屆齡分組存活率與
+  壽命上下界，並在「最短命的已死樣本比最長壽的存活樣本更年輕」時標示壽命非固定 TTL。
+  只讀不寫、不消耗 Maps 配額。
+- **`Search_skill.persist_shop_fields()`**：多欄位單次寫回，確保 `image_url` 與
+  `image_url_renew_date` 同進退不會不一致；`persist_shop_summary()` 改為委派之。
+
+### 修改
+- `resolve_shop_images()` 改回傳 `(可顯示清單, 待更新清單)`，**檢查階段完全不呼叫
+  Google API**（已加測試強制保證）；新增 `refresh_shop_images_async()` 供
+  `push_message` 送出**之後**才觸發更新，不與回覆搶資源。
+- `get_photo_url()` 增加 `maxWidthPx=1000`：實測發現橫幅照片寬度可達 1067px，
+  超過 LINE Flex Message 的 1024px 上限而無法顯示。
+- `get_photo_name_by_place_id()` 自 `get_photo_by_place_id()` 拆出。
+
+### 設計決策
+- 過程中曾實作 `/photo/<place_id>` 代理端點（不儲存網址、每次載入時即時取得），
+  並發現 **LINE 客戶端載入 Flex hero 圖時不跟隨 302 轉址**（收到 302 即停止，
+  連轉址至預設圖也無效），改為直接回傳位元組後端點自測正常。
+- 但使用者評估後**決定不採用代理方案**，改為先蒐集簽章網址的真實壽命數據再決定
+  策略。故最終回到「儲存網址 + 回覆前檢查 + 回覆後更新」並加上觀測欄位，
+  代理相關程式碼（`core/photo_service.py`、`/photo` 端點、`PHOTO_PROXY_BASE`）已移除。
+
+### 驗證
+- `pytest -q`：145 passed。
+- 真實 API 端到端（Strike軒，原網址 403）：判定過期 → 本次用預設圖 → 回覆後更新
+  → `image_url_renew_date` 寫入 → 新網址存活。
+- LINE 實機（「西門推薦的拉麵店有什麼」）：**照片正常顯示**，端到端 2.03s，
+  日誌無任何「圖片網址已過期」紀錄。
+- 詳見 `review/review_20260802_0035.md`、`review/review_20260803_0103.md`。
+
+### 後續
+`image_url_renew_date` 自此累積，需定期執行觀測腳本取得壽命分布，
+再決定是否導入定期全量刷新（全量一輪約 180 次呼叫，而每日上限為 100 次）。

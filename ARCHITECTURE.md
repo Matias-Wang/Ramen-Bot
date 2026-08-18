@@ -167,7 +167,9 @@ AgentRouter 解析完意圖後埋點：
 
 ### 成本控管與效能限制 (Cost Guardrail)
 - **Field Masking**：呼叫 Google Places API 時，僅請求必要欄位，有效降低 API 消耗支出。
-- **圖片優化**：設定 `maxHeightPx` 為 800px，符合 LINE Flex Message 比例規範。
+- **圖片優化**：呼叫 Places Media 時同時指定 `maxHeightPx=800` 與 `maxWidthPx=1000`，
+  確保長寬兩邊都不超過 LINE Flex Message 的 1024px 上限（僅限高時，橫幅照片的寬
+  可達 1067px 而無法顯示）。
 - **每日用量追蹤器 (Daily Usage Tracker)**：`usage_tracker.py` 在每次呼叫外部 API 或 LLM 前執行配額檢查。
 
   **追蹤範圍與上限：**
@@ -187,6 +189,39 @@ AgentRouter 解析完意圖後埋點：
   **相關檔案：**
   - `log/usage.json`：每日用量資料，可直接開啟查看。
   - `usage_tracker.py`：提供 `check_and_increment(key)` 與 `record_tokens(tokens)` 兩支函式。
+
+### 店家照片的時效處理 (Photo URL Lifecycle)
+Google Places Media 端點回傳的 `photoUri` 是**有時效的簽章網址**：過期後仍是合法的
+https 格式，但實際請求會回 403，僅憑字串無法判斷。此網址被存於店家資料的 `image_url`
+欄位，因此必然會逐筆腐爛（2026-08-02 實測：正式環境 180 筆中 168 筆已失效，佔 93.3%）。
+
+處理流程分為「檢查」與「更新」兩段，並**嚴格分置於回覆的前後**：
+
+```
+回覆前  resolve_shop_images() — 平行 HEAD 檢查各店家 image_url
+        ├─ 有效 → 直接使用
+        └─ 過期 → 本次 image_url 置為 None（flex_handler 自動改用預設拉麵圖），
+                  該店家列入待更新清單
+           ※ 此階段完全不呼叫任何 Google API（已有測試強制保證），
+             確保回覆速度不受影響
+
+push_message 送出回覆
+
+回覆後  refresh_shop_images_async() — 對待更新清單開背景執行緒
+        └─ 呼叫 Places API 取得新網址，連同 image_url_renew_date
+           （UTC ISO 8601）以 persist_shop_fields() 單次寫回，兩欄位同進退
+```
+
+- **`image_url_renew_date`**：記錄網址取得時刻，供觀測簽章網址的實際存活時間。
+  Google 未公開此壽命，且實測顯示**不是固定 TTL**（同時段寫入的網址會有不同下場），
+  故需累積分布才能決定是否導入定期刷新。觀測工具：`scripts/check_image_url_lifetime.py`。
+- **不設定期全量刷新**：待觀測數據足夠後再評估。全量一輪約需 180 次 Places 呼叫，
+  而 `google_maps_api` 每日上限為 100 次，導入前須一併處理配額與費用。
+- **已知取捨**：LINE 訊息推播後無法修改，舊訊息中的網址若已過期，使用者往回滑時
+  仍會顯示預設圖；更新亦僅涵蓋「本次被查到且已過期」的店家。
+- **離線批次補齊**：`scripts/update_api_data.py --update-photos` 可一次補全所有失效
+  網址並寫入 `image_url_renew_date`；此為離線維護工具，可用 `E2E_TEST_MODE=1`
+  豁免每日配額，完成後需執行 `migrate_to_firestore.py --mode=sync` 同步。
 
 ### 數據一致性校驗 (Data Integrity)
 - **Pipeline 驗證**：`build_new_shops.py` 呼叫 `src/services/google_maps.py` 的 `verify_shop_status()`（Places API New）驗證店家是否仍在營業，過濾 `CLOSED_PERMANENTLY` 店家。

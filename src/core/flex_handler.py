@@ -1,6 +1,9 @@
-import json
 import copy
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional
 from urllib.parse import quote
+
+TAIPEI_TZ = timezone(timedelta(hours=8))
 
 # === 1. Flex Message 基礎模板 ===
 BASE_BUBBLE_STRUCTURE = {
@@ -38,6 +41,85 @@ BASE_BUBBLE_STRUCTURE = {
         "contents": []
     }
 }
+
+def _format_clock(time_point: Dict[str, Any]) -> str:
+    """
+    將 Places API 的 {"hour": 11, "minute": 30} 格式化為 "11:30"。
+
+    Parameters
+    ----------
+    time_point : Dict[str, Any]
+        Places API period 中的 open 或 close 節點。
+
+    Returns
+    -------
+    str
+        24 小時制的 "HH:MM" 字串。
+    """
+    return f"{time_point.get('hour', 0):02d}:{time_point.get('minute', 0):02d}"
+
+
+def _format_opening_hours(
+    opening_hours: Optional[Dict[str, Any]], now: Optional[datetime] = None
+) -> Optional[str]:
+    """
+    組出 Flex Bubble 顯示用的「今日營業時段」單行文字。
+
+    時段來源為 Places API 原生的 `periods`（day 0=週日），而非英文的
+    `weekday_text`，故不需額外呼叫 API 即可產出中文顯示文字。
+    只呈現時段本身（例如 `11:00-14:00、17:00-22:00`），不判斷當下是否營業中；
+    店家下午有無休息，自然反映為一段或多段。
+
+    Parameters
+    ----------
+    opening_hours : Optional[Dict[str, Any]]
+        店家營業時間資料，須含 "periods" 鍵。
+    now : Optional[datetime]
+        用以決定「今日」是星期幾，預設為當下的台北時間。
+
+    Returns
+    -------
+    Optional[str]
+        顯示用文字；無營業時間資料時回傳 None（呼叫端整行省略）。
+    """
+    if not opening_hours:
+        return None
+    periods = opening_hours.get("periods") or []
+    if not periods:
+        return None
+
+    if now is None:
+        now = datetime.now(TAIPEI_TZ)
+
+    # Places API 僅在 24 小時營業時省略 close 欄位
+    if any("day" not in (p.get("close") or {}) for p in periods):
+        return "🕒 24 小時營業"
+
+    # Places API day 編碼：0=週日 ... 6=週六；Python weekday()：0=週一 ... 6=週日
+    today = (now.weekday() + 1) % 7
+    today_periods = [p for p in periods if (p.get("open") or {}).get("day") == today]
+
+    if not today_periods:
+        # 今日無起始時段，但昨日跨午夜的時段可能仍在進行中（深夜營業的拉麵店）。
+        # 若不納入，深夜時段查詢會對正在營業的店家誤顯示「今日公休」。
+        now_minutes = now.hour * 60 + now.minute
+        today_periods = [
+            p
+            for p in periods
+            if p["close"].get("day") == today
+            and now_minutes
+            < p["close"].get("hour", 0) * 60 + p["close"].get("minute", 0)
+        ]
+
+    if not today_periods:
+        return "🕒 今日公休"
+
+    texts = [
+        f"{_format_clock(p.get('open') or {})}-{_format_clock(p['close'])}"
+        for p in today_periods
+    ]
+    return f"🕒 {'、'.join(texts)}"
+
 
 def assemble_carousel(results, recommendations=None):
     """
@@ -97,6 +179,22 @@ def get_flex_bubble(shop, recommendation=None):
         body_contents.pop(2)
         body_contents[2]['text'] = address
         body_contents[4]['text'] = rec_text
+
+    # 營業時間插在分隔線之前（地址之後），且於上方索引配對完成後才插入，
+    # 避免影響既有的 rating 有無所造成的索引位移邏輯。
+    hours_text = _format_opening_hours(shop.get('opening_hours'))
+    if hours_text:
+        separator_index = next(
+            i for i, c in enumerate(body_contents) if c['type'] == 'separator'
+        )
+        body_contents.insert(separator_index, {
+            "type": "text",
+            "text": hours_text,
+            "size": "xs",
+            "color": "#666666",
+            "wrap": True,
+            "margin": "sm"
+        })
 
     if image_url:
         bubble['hero']['url'] = image_url
