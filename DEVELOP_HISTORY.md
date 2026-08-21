@@ -434,6 +434,43 @@
 
 ---
 
+## 2026-07-09 ~ 2026-07-30 — 成本、延遲、可觀測性與資料飛輪四線優化
+
+> 本段補寫先前留白的期間。H1~H4 高風險漏洞、M1~M5 中風險、L1~L7 低風險清理、
+> AI 摘要快取、效能計時 KPI 的逐項細節已完整記錄於 `PENDING.md`，此處不重複，
+> 僅補上該檔未涵蓋的四項。
+
+### 階段定位（2026-07-24 盤點）
+專案已過 MVP、進入「可維運的產品」階段：雙後端、CI/CD、KPI 計時、快取、回報佇列、
+對話埋點皆齊備。此後的重點不是加功能，而是三件事——**壓成本、降延遲、把資料飛輪轉起來**。
+以下四項即依此排序執行。
+
+### 新增
+- **結構化日誌 `core/obs.py`（PR #14）**：新增 `emit_metric`，輸出單行 JSON（保留既有
+  彩色 print 不變）。`app.py` 於 webhook `finally` 輸出 `request` / `location_request`
+  事件（含 `intent`、`total_s`），供 Cloud Logging 建立 FALLBACK 率 / 延遲告警。
+  告警規則本身屬 GCP ops，待需要時於 Cloud Console 建立。
+- **資料飛輪分析工具 `scripts/analyze_conversations.py`（2026-07-30）**：本地工具
+  （`scripts/` 不進版控），讀 `data_logs/` 產出三份輸出：
+  1. 意圖（skill）分布 + 熱門查詢地區 / 店名——分類錯誤挖掘的起點
+  2. 資料盲區盤點：交叉比對 `ramen_data.json`，列出「查詢有、資料庫查無」的地區 /
+     店名，指導人工補店
+  3. 待處理回報數：讀 `tracking_feedbacks.json` 提醒 feedback 修正別漏
+
+  用法：`PYTHONUTF8=1 python scripts/analyze_conversations.py [--top N]`
+  （需先跑 `scripts/fetch_cloud_data.py` 同步）。持續維運（每週執行、據以補店 / 調 prompt）
+  仍屬人工流程。
+
+### 修改
+- **Geocoding 快取層級化（2026-07-30，PR #13）**：`_get_latlng_cached` 改為三層快取
+  （記憶體 → Firestore `geocode_cache` → API）。成功結果下沉 Firestore，可跨 worker /
+  重啟共用；失敗結果不持久化。`pytest` 137 passed + 真實 Firestore 端到端驗證。
+- **圖片存活檢查加快取（2026-07-30，PR #14）**：`_is_image_url_alive` 新增短期存活快取
+  （TTL 300s、上限 2000 筆），TTL 內同一圖片略過 HEAD request，省下使用者等待路徑上的
+  往返。只快取「存活」結果；失效者照舊走背景修復，不因快取而延誤。
+
+---
+
 ## 2026-08-01 — 找出 LINE 回覆延遲的真正根因：Cloud Run CPU throttling
 
 ### 修正
@@ -468,8 +505,8 @@ CPU 常駐改以實例生命週期計費，`min-instances=1`、1 vCPU / 1GiB 常
 約 US$40~50。已向使用者澄清 Google Maps Platform 的每月 US$200 抵免額為 Maps SKU
 專款專用、不可支付 Cloud Run / Firestore，使用者確認額度充足後同意採行。
 
-> 註：本檔案 2026-07-09 ~ 2026-07-30 期間的項目（AI 摘要快取、效能計時 KPI、
-> 高風險漏洞修補 H1~H4、Geocoding 快取下沉、A2/A4）尚未補寫，進度詳見 `PENDING.md`。
+> 註：2026-07-09 ~ 2026-07-30 期間的項目已於上一段補寫；其中 AI 摘要快取、效能計時 KPI、
+> 高風險漏洞修補 H1~H4 的逐項細節記於 `PENDING.md`。
 
 ---
 
