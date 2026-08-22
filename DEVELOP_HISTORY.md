@@ -458,8 +458,9 @@
 - **資料飛輪分析工具 `scripts/analyze_conversations.py`（2026-07-30）**：本地工具
   （`scripts/` 不進版控），讀 `data_logs/` 產出三份輸出：
   1. 意圖（skill）分布 + 熱門查詢地區 / 店名——分類錯誤挖掘的起點
-  2. 資料盲區盤點：交叉比對 `ramen_data.json`，列出「查詢有、資料庫查無」的地區 /
-     店名，指導人工補店
+  2. 資料盲區盤點：列出「查詢有、但實際查不到店家」的地區 / 店名，指導人工補店
+     （地區判定於 2026-08-21 改為直接呼叫搜尋主路徑 `filter_ramen_data()`；
+     原本的 `location` 字串比對會把站名查詢全部誤判為盲區）
   3. 待處理回報數：讀 `tracking_feedbacks.json` 提醒 feedback 修正別漏
 
   用法：`PYTHONUTF8=1 python scripts/analyze_conversations.py [--top N]`
