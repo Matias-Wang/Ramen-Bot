@@ -8,17 +8,28 @@ import json
 import time
 import threading
 from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import (
-    MessageEvent,
+from linebot.v3 import WebhookHandler
+from linebot.v3.exceptions import InvalidSignatureError
+# 發訊型別（linebot.v3.messaging）與收訊型別（linebot.v3.webhooks）務必分清楚：
+# v3 的 TextMessage / LocationMessage 是「要送出的」訊息，
+# 而「收到的」訊息叫 TextMessageContent / LocationMessageContent。
+# 兩邊同名但語意相反，混用不會 import 失敗，只會讓 handler 收不到訊息。
+from linebot.v3.messaging import (
+    ApiClient,
+    Configuration,
+    MessagingApi,
+    PushMessageRequest,
     TextMessage,
-    LocationMessage,
-    TextSendMessage,
-    FlexSendMessage,
+    FlexMessage,
+    FlexContainer,
     QuickReply,
-    QuickReplyButton,
+    QuickReplyItem,
     LocationAction,
+)
+from linebot.v3.webhooks import (
+    MessageEvent,
+    TextMessageContent,
+    LocationMessageContent,
 )
 from dotenv import load_dotenv
 
@@ -57,7 +68,13 @@ LINE_TAG = int(os.getenv("LINE_TAG", "0"))
 app = Flask(__name__)
 
 # 初始化 LINE Bot API 與 Webhook Handler
-line_bot_api = LineBotApi(os.getenv('LINE_CHANNEL_ACCESS_TOKEN'))
+# ApiClient 刻意採「模組層級長生命週期」而非官方範例的 per-request
+# `with ApiClient(...)`：本服務的 push 全部發生在背景 daemon thread，
+# 每次請求重建 client 會讓下方的連線預熱失效，第一次 push 的冷連線成本
+# （實測約 22 秒）會回來。底層 urllib3 連線池本身為 thread-safe。
+configuration = Configuration(access_token=os.getenv('LINE_CHANNEL_ACCESS_TOKEN'))
+_line_api_client = ApiClient(configuration)
+line_bot_api = MessagingApi(_line_api_client)
 handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
 
 # 初始化 AgentRouter：負責意圖解析與技能分發
@@ -178,17 +195,21 @@ def _reply_to_line(
         # FALLBACK：dispatch 頂層捕捉到的嚴重錯誤，或需要使用者分享位置
         if intent == 'FALLBACK':
             check_and_increment("line_api")
-            text_message = TextSendMessage(
-                text=result.get('message', '系統發生錯誤，請稍後再試。')
-            )
             # LOCATION_REQUEST：使用者文字提及「附近」但無可解析地名（純文字
             # 訊息本身無座標），附加 LINE 原生位置分享 Quick Reply，讓使用者
             # 一鍵分享後觸發 handle_location 走真正的座標篩選。
+            quick_reply = None
             if ui_tag == 'LOCATION_REQUEST':
-                text_message.quick_reply = QuickReply(items=[
-                    QuickReplyButton(action=LocationAction(label='分享位置'))
+                quick_reply = QuickReply(items=[
+                    QuickReplyItem(action=LocationAction(label='分享位置'))
                 ])
-            line_bot_api.push_message(user_id, text_message)
+            text_message = TextMessage(
+                text=result.get('message', '系統發生錯誤，請稍後再試。'),
+                quick_reply=quick_reply,
+            )
+            line_bot_api.push_message(
+                PushMessageRequest(to=user_id, messages=[text_message])
+            )
             return
 
         # 錯誤回報收集
@@ -201,18 +222,24 @@ def _reply_to_line(
             )
             check_and_increment("line_api")
             line_bot_api.push_message(
-                user_id,
-                TextSendMessage(
-                    text="感謝您的回報！已記錄您的意見，我們將盡快確認並修正相關資料。"
-                ),
+                PushMessageRequest(
+                    to=user_id,
+                    messages=[TextMessage(
+                        text="感謝您的回報！已記錄您的意見，我們將盡快確認並修正相關資料。"
+                    )],
+                )
             )
             return
 
         if intent == 'KNOWLEDGE_QUERY':
             check_and_increment("line_api")
             line_bot_api.push_message(
-                user_id,
-                TextSendMessage(text=result.get('message', '知識庫查詢失敗，請稍後再試。'))
+                PushMessageRequest(
+                    to=user_id,
+                    messages=[TextMessage(
+                        text=result.get('message', '知識庫查詢失敗，請稍後再試。')
+                    )],
+                )
             )
             return
 
@@ -220,8 +247,12 @@ def _reply_to_line(
         if not data:
             check_and_increment("line_api")
             line_bot_api.push_message(
-                user_id,
-                TextSendMessage(text='找不到符合條件的拉麵店，請試著提供更多或不同的條件。')
+                PushMessageRequest(
+                    to=user_id,
+                    messages=[TextMessage(
+                        text='找不到符合條件的拉麵店，請試著提供更多或不同的條件。'
+                    )],
+                )
             )
             return
 
@@ -229,17 +260,25 @@ def _reply_to_line(
         _t_push = time.time()
         if ui_tag == "CAROUSEL":
             carousel_contents = assemble_carousel(data, recommendations)
-            flex = FlexSendMessage(alt_text="拉麵推薦", contents=carousel_contents)
+            flex = FlexMessage(
+                alt_text="拉麵推薦",
+                contents=FlexContainer.from_dict(carousel_contents),
+            )
             check_and_increment("line_api")
-            line_bot_api.push_message(user_id, flex)
+            line_bot_api.push_message(
+                PushMessageRequest(to=user_id, messages=[flex])
+            )
         elif intent == "GET_SPECIFIC_INFO" and len(data) == 1:
             rec = recommendations[0] if recommendations else None
             bubble = get_flex_bubble(data[0], rec)
-            flex = FlexSendMessage(
-                alt_text=data[0].get("name", "店家資訊"), contents=bubble
+            flex = FlexMessage(
+                alt_text=data[0].get("name", "店家資訊"),
+                contents=FlexContainer.from_dict(bubble),
             )
             check_and_increment("line_api")
-            line_bot_api.push_message(user_id, flex)
+            line_bot_api.push_message(
+                PushMessageRequest(to=user_id, messages=[flex])
+            )
         else:
             items = []
             for i, s in enumerate(data[:5]):
@@ -254,7 +293,9 @@ def _reply_to_line(
                 )
             check_and_increment("line_api")
             line_bot_api.push_message(
-                user_id, TextSendMessage(text=reply_text)
+                PushMessageRequest(
+                    to=user_id, messages=[TextMessage(text=reply_text)]
+                )
             )
         print(f"{GREEN}[TIMER] push_message 完成，耗時 {time.time() - _t_push:.1f}s，"
               f"全程總耗時 {time.time() - _t_start:.1f}s{RESET}")
@@ -267,8 +308,10 @@ def _reply_to_line(
         try:
             check_and_increment("line_api")
             line_bot_api.push_message(
-                user_id,
-                TextSendMessage(text='系統忙碌中，請稍後再試。')
+                PushMessageRequest(
+                    to=user_id,
+                    messages=[TextMessage(text='系統忙碌中，請稍後再試。')],
+                )
             )
         except Exception as reply_err:
             print(f"{RED}ERROR: push_message 失敗（確認使用者是否加好友）: {reply_err}{RESET}")
@@ -323,7 +366,11 @@ def _reply_location(
             else:
                 text = "已在您位置 5 公里內搜尋，目前找不到可推薦的拉麵店。"
             check_and_increment("line_api")
-            line_bot_api.push_message(user_id, TextSendMessage(text=text))
+            line_bot_api.push_message(
+                PushMessageRequest(
+                    to=user_id, messages=[TextMessage(text=text)]
+                )
+            )
             return
 
         recommendations = generate_recommendations(
@@ -332,9 +379,14 @@ def _reply_location(
         # 回覆前檢查圖片網址存活；過期者本次用預設圖，待回覆送出後才更新網址
         results, stale_image_shops = resolve_shop_images(results)
         carousel_contents = assemble_carousel(results, recommendations)
-        flex = FlexSendMessage(alt_text="附近的拉麵推薦", contents=carousel_contents)
+        flex = FlexMessage(
+            alt_text="附近的拉麵推薦",
+            contents=FlexContainer.from_dict(carousel_contents),
+        )
         check_and_increment("line_api")
-        line_bot_api.push_message(user_id, flex)
+        line_bot_api.push_message(
+            PushMessageRequest(to=user_id, messages=[flex])
+        )
         print(f"{GREEN}[TIMER] 位置訊息回覆完成，全程總耗時 {time.time() - _t_start:.1f}s{RESET}")
 
         # 回覆已送出，此時才更新過期的圖片網址
@@ -345,8 +397,10 @@ def _reply_location(
         try:
             check_and_increment("line_api")
             line_bot_api.push_message(
-                user_id,
-                TextSendMessage(text='系統忙碌中，請稍後再試。')
+                PushMessageRequest(
+                    to=user_id,
+                    messages=[TextMessage(text='系統忙碌中，請稍後再試。')],
+                )
             )
         except Exception as reply_err:
             print(f"{RED}ERROR: push_message 失敗（確認使用者是否加好友）: {reply_err}{RESET}")
@@ -362,7 +416,7 @@ def _reply_location(
 TAIPEI_TZ = timezone(timedelta(hours=8))
 
 
-@handler.add(MessageEvent, message=TextMessage)
+@handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event: MessageEvent) -> None:
     """
     LINE 訊息事件入口。立即返回（非阻塞），由背景執行緒處理 AI 邏輯與回覆。
@@ -392,7 +446,7 @@ def handle_message(event: MessageEvent) -> None:
     thread.start()
 
 
-@handler.add(MessageEvent, message=LocationMessage)
+@handler.add(MessageEvent, message=LocationMessageContent)
 def handle_location(event: MessageEvent) -> None:
     """
     LINE 位置訊息事件入口。立即返回（非阻塞），由背景執行緒處理定位推薦與回覆。
