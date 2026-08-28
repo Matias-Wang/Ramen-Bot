@@ -62,6 +62,7 @@
 - ✅ Webhook 訊息去重（`message.id`）、時間感知（`timestamp`）、群組/私聊分流（僅處理一對一私聊）
 - ✅ LINE 位置訊息（`LocationMessage`）定位推薦：分享 GPS 位置即以 Haversine 找最近 ≤3 間（預設 5km），找不到時告知搜尋範圍與最近距離
 - ✅ 「現在有開」查詢：依店家營業時間（Places `regularOpeningHours`）過濾當下營業中的店家
+- ✅ 今日營業時段顯示：Flex Bubble 上直接列出當日營業時段（支援多時段、跨午夜、24 小時營業、今日公休）
 - ✅ 指定搜尋範圍：文字提到「方圓 N 公里」時覆寫預設半徑
 - ✅ 對話特徵埋點：雲端非同步記錄每筆意圖分類至 Firestore `conversation_logs`，供地端分析與 Prompt 調校
 
@@ -232,7 +233,7 @@ python src/app.py
 | 套件管理 | UV |
 | 非同步 | threading.ThreadPoolExecutor（推薦文並行）+ threading（非阻塞 Webhook） |
 | LLM | Gemini (`google-genai`) |
-| LINE SDK | `line-bot-sdk` |
+| LINE SDK | `line-bot-sdk` v3 原生 API |
 | Web 框架 | Flask（本機）/ gunicorn + Cloud Run（上線） |
 | 地圖服務 | `googlemaps`（Geocoding）、`requests`（Places API New） |
 | 向量搜尋 | ChromaDB（本機）/ Firestore KNN（上線） |
