@@ -569,3 +569,78 @@ CPU 常駐改以實例生命週期計費，`min-instances=1`、1 vCPU / 1GiB 常
 ### 後續
 `image_url_renew_date` 自此累積，需定期執行觀測腳本取得壽命分布，
 再決定是否導入定期全量刷新（全量一輪約 180 次呼叫，而每日上限為 100 次）。
+
+---
+
+## 2026-08-18 — Flex Bubble 顯示今日營業時段
+
+### 新增
+- `core/flex_handler.py` `_format_opening_hours()`：直接由 Places API 原生 `periods`
+  產出中文顯示文字，插在 Bubble 分隔線之前（地址之後）。不使用英文的 `weekday_text`，
+  故**不需額外呼叫 API**。支援多時段（`11:00-14:00、17:00-22:00`）、跨午夜、
+  24 小時營業與今日公休。
+- 與 2026-07-04 的 `open_now` 過濾**職責分離**：那個負責「篩出現在有開的店」，
+  這個只負責「把今日時段顯示出來」，不判斷當下是否營業中。店家下午有無休息，
+  自然反映為一段或多段。
+
+### 設計決策
+- 插入時機刻意排在既有索引配對完成「之後」，避免影響 `get_flex_bubble()` 中
+  「有無 rating」造成的索引位移邏輯。
+
+### 驗證
+- 新增 13 個單元測試（多時段／跨午夜／今日公休／24 小時／與 rating 併存），`pytest` 160 passed。
+- LINE 實機確認營業時間正常顯示（2026-08-22）。註：實機所見為一般時段，
+  跨午夜與今日公休兩個分支目前僅單元測試覆蓋。
+
+---
+
+## 2026-08-28 — LINE SDK v2 相容層遷移至 v3 原生 API
+
+### 修改
+- `src/app.py`（全專案唯一引用 linebot 之處，92 增 38 刪）由 `linebot.*` 相容命名空間
+  改為 `linebot.v3.*` 原生 API。相容層已 deprecated，未來大版本將移除；
+  `requirements.txt` **未變動**（v2 相容層與 v3 原生 API 同屬 `line-bot-sdk==3.22.0`）。
+
+| v2 | v3 |
+|----|----|
+| `LineBotApi(token)` | `Configuration` + `ApiClient` + `MessagingApi` |
+| `push_message(uid, m)` | `push_message(PushMessageRequest(to=uid, messages=[m]))` |
+| `TextSendMessage` | `TextMessage` |
+| `FlexSendMessage(contents=dict)` | `FlexMessage(contents=FlexContainer.from_dict(dict))` |
+| `QuickReplyButton` | `QuickReplyItem` |
+| 收訊 `TextMessage` / `LocationMessage` | `TextMessageContent` / `LocationMessageContent` |
+
+### 三個刻意處理的風險點
+1. **命名反轉（無聲錯誤）**：v3 的 `TextMessage` / `LocationMessage` 是「**發訊**」型別，
+   與 v2 的「收訊」語意相反且同名。誤用**不會 import 失敗**，只會讓 handler 收不到訊息。
+   已於 import 區加註說明，收訊一律改用 `webhooks.*Content`。
+2. **連線預熱不可失效**：v3 官方範例慣例為 per-request `with ApiClient(...)`，
+   照抄會讓 `app.py` 的 LINE 連線預熱失效，使第一次 push 的冷連線成本
+   （2026-08-01 實測約 22 秒）回歸。改採**模組層級長生命週期 `ApiClient`**，
+   並於初始化處註明原因。
+3. **測試零覆蓋**：`tests/` 未引用 linebot，160 個測試對此段程式**沒有任何保護力**。
+   另以匯入煙霧測試與真實資料建構測試補強，並認知 LINE 實機是唯一的驗證網。
+
+### 驗證
+- 匯入煙霧測試：型別為 `MessagingApi` / v3 `WebhookHandler`，handler 註冊為
+  `MessageEvent_TextMessageContent` / `MessageEvent_LocationMessageContent`。
+- 以真實店家資料建構 Carousel／單一 Bubble／`TextMessage`+QuickReply，
+  `FlexContainer.from_dict` 與 `PushMessageRequest` 序列化皆通過。
+- `pytest` 160 passed；`scripts/e2e_test.py --full` 全情境通過。
+- **正式環境（revision `ramen-bot-00077-f49`）**：log 出現
+  `[STARTUP] LINE API 連線預熱完成`；LINE 實機驗證文字回覆、Carousel、單一 Bubble、
+  定位推薦 + 分享位置 QuickReply 四項皆正常。
+- **冷啟延遲未退化**：`push_message` 實測 **v3 0.2s vs v2 0.2s**（對照舊 revision
+  `ramen-bot-00076-5ff`）；部署後第一則訊息端到端 7.57s，其中 LLM 佔 6.48s，
+  非 LLM 開銷約 1.1s，未出現 20 秒級冷連線成本。
+
+### 過程中的教訓
+遷移仍在分支上未合併時，曾有一次「LINE 實機測試通過」的誤判——當時 `origin/main`
+停在 `9d84f7e`、服務中的 revision 仍是遷移前的 `ramen-bot-00076-5ff`，且 `deploy.yml`
+只在 push 到 main 時觸發、無 `workflow_dispatch`，故測到的其實是 v2 舊版。
+**在測試網不覆蓋的區域，「測的是哪個 revision」必須先確認過，驗證才算數。**
+
+### 回退資產（已實測）
+tag `pre-line-sdk-v3`（= `9d84f7e`，本地與 origin 皆有）；revision `ramen-bot-00076-5ff`
+為 Ready，其映像檔 `sha256:70c6fc4a…` 仍在 Artifact Registry，回退後即使冷啟擴容也可拉起。
+最快回退路徑：`gcloud run services update-traffic ramen-bot --region=asia-east1 --to-revisions=ramen-bot-00076-5ff=100`。

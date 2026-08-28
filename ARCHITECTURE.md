@@ -43,7 +43,7 @@
       |       - 萃取 shop_name + error_description（來自 Gemini 解析）
       |       - 本地：寫入 log/feedback_reports.json
       |       - 生產：寫入 Firestore feedback_reports collection
-      |       - 回覆 LINE 使用者確認訊息（TextSendMessage）
+      |       - 回覆 LINE 使用者確認訊息（`TextMessage`）
       |
 [STEP 3] 推薦文 / 介紹文生成
       |       - SEARCH_BY_CRITERIA：generate_recommendations() — ThreadPoolExecutor +
@@ -80,7 +80,12 @@
        過濾當下營業中的店家；**無營業時間資料的店家一律排除**（無法確認，寧缺勿錯）
     4. 結果依 `distance_km` 排序（若有座標），超過 3 筆則 `random.sample` 隨機抽選
 - **推薦文生成**：`ThreadPoolExecutor` + 預熱 Client Pool 並行呼叫 Gemini，最多 3 筆
-- **輸出格式**：FlexSendMessage Carousel（最多 3 個 bubble，含 Map 按鈕 + social_links 按鈕）
+- **輸出格式**：`FlexMessage` Carousel（最多 3 個 bubble，含 Map 按鈕 + social_links 按鈕）
+- **今日營業時段顯示**：`core/flex_handler.py` 的 `_format_opening_hours()` 直接由
+  Places API 原生 `periods` 產出中文顯示文字（不使用英文 `weekday_text`，故不需額外
+  呼叫 API），插在 Bubble 分隔線之前。支援多時段（`11:00-14:00、17:00-22:00`）、
+  跨午夜、24 小時營業與今日公休。**只呈現時段本身，不判斷當下是否營業中**——
+  「是否營業中」由 Search Skill 的 `open_now` 過濾負責，兩者職責分離
 - **定位推薦（LocationMessage 專用）**：`filter_by_location(lat, lng, radius_km=5.0, style)`
   不經 Geocoding、不隨機抽選，直接對店家快取跑 Haversine，依距離排序取最近 ≤3 間；
   回傳 `(results, nearest_km)`，`nearest_km` 供半徑內找不到時回覆使用者最近一間的距離
@@ -93,7 +98,7 @@
     3. 更新後回寫本地 JSON（或 Firestore document）
 - **Field Masking**：`id, displayName, rating, userRatingCount, formattedAddress, photos`
 - **介紹文生成**：有 `description`（IG 食記）時，以 `INFO_SUMMARY_PROMPT` 呼叫 Gemini 摘要為列點式介紹文、總長 150 字以內（`summarize_description()`）；無 `description` 時回退至 `RECOMMEND_PROMPT` 生成 30-60 字推薦文（同 Search Skill 的 `generate_recommendations`）。兩個函式皆已關閉 `gemini-2.5-flash` 預設的 thinking（`thinking_config=ThinkingConfig(thinking_budget=0)`），避免思考鏈消耗 `max_output_tokens` 預算導致輸出被硬切斷
-- **輸出格式**：FlexSendMessage 單一 Bubble，含 Map 按鈕 + social_links 按鈕（邏輯與 Search Skill Carousel 相同，使用 `get_flex_bubble()`）
+- **輸出格式**：`FlexMessage` 單一 Bubble，含 Map 按鈕 + social_links 按鈕（邏輯與 Search Skill Carousel 相同，使用 `get_flex_bubble()`）
 
 ### Feedback Skill (錯誤回報佇列) — `src/skills/feedback_skill.py`
 - **數據源**：本地 `log/feedback_reports.json` / 生產 Firestore `feedback_reports` collection
@@ -101,7 +106,7 @@
     1. `collect_report(shop_name, error_description, user_id)`：將回報寫入儲存（雙路徑），每筆含 UUID、時間戳、`status="pending"`
     2. `check_pending_reports()`：於 `src/app.py` 啟動時自動呼叫，讀取 `status=pending` 的回報並印出至 console
 - **修正流程**：人工確認後，將回報的 `status` 欄位改為 `"resolved"`（不再被 `check_pending_reports` 列出）
-- **輸出格式**：TextSendMessage 確認訊息（不使用 Flex）
+- **輸出格式**：`TextMessage` 確認訊息（不使用 Flex）
 
 ### Knowledge Skill (RAG 知識庫) — `src/skills/knowledge_skill.py`
 - **數據源**：`knowledge/` 目錄下的 `.txt` / `.md` 知識文件
@@ -136,7 +141,7 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
 
 - **訊息去重 (`event.message.id`)**：`src/core/message_dedup.py` 的 `is_duplicate_message()` 在 `handle_message` 啟動背景執行緒前檢查，重複請求直接跳過（仍回 200），避免 LINE webhook 重送導致 Gemini 被重複觸發計費。本地：記憶體 `set`；生產：Firestore `processed_message_ids` collection（雙路徑判斷邏輯同 `DATA_BACKEND`）。
 - **時間感知 (`event.timestamp`)**：`handle_message` 將毫秒時戳轉換為台北時間字串，透過 `AgentRouter.dispatch(user_text, current_time=...)` 注入 STEP 1 意圖解析的 `contents`，供 Gemini 解析「今天」、「最近」等相對時間用語。
-  - 注：目前 `ramen_data.json` 尚無營業時間欄位，「現在有開的店」類查詢仍需額外資料工程才能實作，此處僅先注入時間感知本身。
+  - 注：營業時間欄位已於 2026-07-04 補齊（179 筆中 168 筆有實際時段），「現在有開的店」查詢已可運作，見上方 Search Skill 的 `open_now` 過濾。
 - **來源環境分流 (`event.source.type`)**：`handle_message` 最前面判斷，非一對一私聊（`source.type != "user"`，即群組/多人聊天室）直接忽略、不呼叫 Gemini。範圍經使用者確認：目前不需要 @ 標記偵測。
 
 ### 多事件響應：LocationMessage 定位推薦（階段二）
@@ -249,7 +254,7 @@ push_message 送出回覆
 | Web 框架 | Flask dev server | Flask + gunicorn（1 worker / 8 threads） |
 | 套件管理 | UV | pip（Dockerfile 內） |
 | LLM | Gemini `google-genai` | 同左 |
-| LINE SDK | `line-bot-sdk` | 同左 |
+| LINE SDK | `line-bot-sdk` v3 原生 API（`linebot.v3.*`） | 同左 |
 | 地圖服務 | `googlemaps`（Geocoding）、`requests`（Places API New） | 同左 |
 | 資料庫 | JSON 檔案 | Firestore（`ramen_shops`、`config/daily_usage`） |
 | 向量搜尋 | ChromaDB（本地持久化） | Firestore KNN（`ramen_knowledge`） |
