@@ -643,4 +643,23 @@ CPU 常駐改以實例生命週期計費，`min-instances=1`、1 vCPU / 1GiB 常
 ### 回退資產（已實測）
 tag `pre-line-sdk-v3`（= `9d84f7e`，本地與 origin 皆有）；revision `ramen-bot-00076-5ff`
 為 Ready，其映像檔 `sha256:70c6fc4a…` 仍在 Artifact Registry，回退後即使冷啟擴容也可拉起。
-最快回退路徑：`gcloud run services update-traffic ramen-bot --region=asia-east1 --to-revisions=ramen-bot-00076-5ff=100`。
+兩條回退路徑，依可靠度排列：
+
+**路徑 A — 由 git 重建（最可靠，不依賴任何雲端保留機制）**
+```
+git revert -m 1 7d5da8a && git push origin main     # 或 git checkout pre-line-sdk-v3 取回 v2 的 app.py
+```
+CI/CD 會重新 build 並部署。`pre-line-sdk-v3` 同時鎖住了當時的 `requirements.txt`
+（`line-bot-sdk==3.22.0`），故重建結果可重現。**只要 GitHub repo 還在，這條路永遠有效。**
+
+**路徑 B — 切回舊 revision（最快，數秒生效，但有前提）**
+```
+gcloud run services update-traffic ramen-bot --region=asia-east1   --to-revisions=ramen-bot-00076-5ff=100
+```
+恢復追蹤最新版用 `--to-latest`。
+前提是該 revision 與其映像檔（`sha256:70c6fc4a…`）仍存在——2026-08-28 查核時
+Artifact Registry **無清理政策**，映像檔不會被自動刪除；但日後若有人加上清理政策，
+或該 revision 被刪除，此路徑即失效，改走路徑 A。
+
+> 註：本段刻意寫在版控檔案內。`PENDING.md` 與 `CR/` 均在 `.gitignore`，
+> 只存在於當時那台機器上，不能作為回退資訊的唯一來源。
