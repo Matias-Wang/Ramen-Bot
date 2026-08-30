@@ -738,3 +738,11 @@ Artifact Registry **無清理政策**，映像檔不會被自動刪除；但日�
 **LINE 實機驗證通過**（ngrok + 本機 `LINE_TAG=1`，6 題全過，端到端 2.1～8.7s）。
 ⚠️ 測前已確認正式 revision 為 `ramen-bot-00079-2rz`、流量走 ngrok 進本機，
 確保測的是新版而非正式環境舊版（PENDING L36-40 教訓的直接應用）。
+
+### 上線
+commit `7d2bd43`，merge `d951dcd`，CI/CD run `33290802925` success。
+正式環境 revision **`ramen-bot-00079-2rz` → `ramen-bot-00080-r2v`**，
+啟動日誌六項預熱全部完成（含 Firestore gRPC 心跳，證實 `DATA_BACKEND=firestore` 生效）。
+
+回退：`git revert -m 1 d951dcd && git push origin main`（CI 重新 build），
+或 `gcloud run services update-traffic ramen-bot --region=asia-east1 --to-revisions=ramen-bot-00079-2rz=100`（數秒生效）。
