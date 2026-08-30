@@ -55,7 +55,7 @@
 - ✅ 即時店家資料增強（Places API + 7 天 TTL 快取回寫），以 IG 食記為基礎生成 LLM 摘要
 - ✅ 特定店家查詢（GET_SPECIFIC_INFO）同樣輸出 Flex Bubble，含 Map 按鈕與社群連結
 - ✅ 每日 API / LLM 用量追蹤與配額保護
-- ✅ RAG 拉麵知識庫問答（ChromaDB + Google Embedding + Gemini 生成）
+- ✅ RAG 拉麵知識庫問答（ChromaDB + Google Embedding + Gemini 生成），回答採固定版型（一句總起 + 「・」列點，200 字上限，不輸出 Markdown 符號）
 - ✅ 使用者錯誤回報（REPORT_ERROR intent → 收集至 `log/feedback_reports.json` / Firestore，啟動時自動列出待處理項目）
 - ✅ 全局 Fallback 機制（任一 Skill 失敗均能優雅降級）
 - ✅ 非阻塞 Webhook 處理（背景 Thread，防止 LINE 1 秒逾時）
@@ -68,6 +68,9 @@
 - ✅ 回覆前置引導文：Flex 訊息前附一句說明（與 Flex 併在同一次 push，不增加推播次數）
 - ✅ 功能說明回覆：「怎麼使用」這類詢問用法的問句直接回固定功能清單，不進 RAG 檢索
 - ✅ 無效搜尋條件收斂：未指定地區時導向位置分享；僅指定口味時排除海外店家，避免推薦出使用者去不了的日本店家
+- ✅ 地名比對容錯：「台/臺」異體字正規化（台北/台中/台南/台東/台灣），完整行政區名（臺北市中山區）與簡寫（中山區）皆可查詢
+- ✅ 行政區中心點失準補救：座標半徑內查無店家時自動退回地名字串比對，解決「南港」這類未帶「區」字的地名查不到的問題
+- ✅ 避免重複推薦：記錄每位使用者最近一次推薦的店家並於下次搜尋排除，讓「還有其他的嗎？」真的換一批
 
 ---
 
@@ -87,6 +90,7 @@
 ### 核心模組 [CORE]
 1. `agent_router.py`：意圖分發大腦，解析意圖並分發至對應 Skill。
 2. `flex_handler.py`：UI 渲染引擎，負責標準化 Flex Message 輸出。
+3. `recent_shops.py`：記錄每位使用者近期已推薦的店家，供搜尋時排除，避免連續查詢拿到同樣三間。
 
 ### 獨立專業技能 [SKILLS]
 1. **Search Skill** (`src/skills/Search_skill.py`)：地理位置 + 口味條件篩選，非同步推薦文生成。
@@ -104,6 +108,7 @@ Ramen-Bot/
 │   │   ├── flex_handler.py      # [CORE] UI 渲染引擎
 │   │   ├── prompts.py           # LLM Prompt 存放處
 │   │   ├── conversation_logger.py  # 對話特徵埋點（雲端 conversation_logs）
+│   │   ├── recent_shops.py      # 近期已推薦店家（供排除重複）
 │   │   └── usage_tracker.py     # 每日配額檢查與 token 追蹤
 │   ├── skills/
 │   │   ├── Search_skill.py      # [SKILL 1] 條件搜尋
@@ -135,7 +140,7 @@ Ramen-Bot/
 
 ### 核心模組用途
 - **意圖解析**：Gemini 將使用者輸入轉成 `{intent, location, style, shop_name, ui_tag}`
-- **篩選邏輯**：行政區查詢比對 `location` 字串；捷運站等精確點查詢 Geocoding 取座標 → Haversine 距離計算 → 預設 2km 半徑過濾（`radius_km` 可覆寫）
+- **篩選邏輯**：行政區查詢比對 `location` 字串（查詢與店家兩側都先經 `clean_location()` 去除「市/區/縣」並統一「台/臺」寫法）；捷運站等精確點查詢 Geocoding 取座標 → Haversine 距離計算 → 預設 2km 半徑過濾（`radius_km` 可覆寫）；座標查無結果時退回字串比對
 - **推薦生成**：ThreadPoolExecutor + 預熱 Client Pool 並行呼叫 Gemini，每間店生成 30-60 字中文推薦文
 - **UI 組裝**：建立 LINE Flex Message Carousel 回覆給使用者
 
@@ -225,7 +230,11 @@ python src/app.py
 
 ### 核心邏輯
 - **意圖解析**：只取必要欄位（intent, location, style, shop_name, query, radius_km, open_now, ui_tag）；支援四種 intent：SEARCH_BY_CRITERIA / GET_SPECIFIC_INFO / KNOWLEDGE_QUERY / REPORT_ERROR
-- **地理篩選**：行政區查詢（區/市/縣結尾）直接比對 `location` 欄位字串，跳過 Geocoding；捷運站等精確點查詢用 Geocoding 取座標 → Haversine 預設 2km（`radius_km` 可覆寫）；無座標則同樣回退字串 fallback；>3 筆則 random.sample。LINE 位置訊息則以 `filter_by_location()` 直接對座標跑 Haversine 取最近 ≤3 間（預設 5km）
+- **地理篩選**：行政區查詢（區/市/縣結尾）直接比對 `location` 欄位字串，跳過 Geocoding；
+  捷運站等精確點查詢用 Geocoding 取座標 → Haversine 預設 2km（`radius_km` 可覆寫）；
+  無座標、或**座標半徑內查無店家**時回退字串 fallback；>3 筆則 random.sample。
+  字串比對前查詢與店家兩側皆經 `clean_location()` 正規化（去「市/區/縣」+ 統一「台/臺」）。
+  LINE 位置訊息則以 `filter_by_location()` 直接對座標跑 Haversine 取最近 ≤3 間（預設 5km）
 - **營業時間過濾**：`open_now` 為真時，以 `is_open_at()` 依 `opening_hours.periods` 過濾當下營業中的店家（無資料店家排除）
 - **推薦文**：30-60 字繁體中文，溫度 0.6，max_output_tokens 400
 - **快取**：Info Skill 7 天 TTL，過期才呼叫 Places API

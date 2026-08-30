@@ -716,9 +716,13 @@ Artifact Registry **無清理政策**，映像檔不會被自動刪除；但日�
   「明確查詢不誤傷」各 2。
 
 ### 一併盤出
-- **首個真實資料盲區：南港**（2 次查詢、0 結果）。`ramen_data.json` 179 筆中無任何
-  南港店家，而 `README.md` 的範例輸入正是「南港有什麼推薦的豚骨拉麵」——範例已改為
-  資料庫查得到的「大安區有什麼推薦的豚骨拉麵」，補店列入待辦。
+- **首個真實資料盲區：南港**（2 次查詢、0 結果）。`README.md` 的範例輸入正是
+  「南港有什麼推薦的豚骨拉麵」——範例已改為資料庫查得到的「大安區有什麼推薦的豚骨拉麵」。
+  > ⚠️ **當時的歸因是錯的**：本則原記為「179 筆中無任何南港店家」，但同日稍後診斷發現
+  > 資料庫其實有 1 間（鐵丸十三堂），真正的原因是 Geocoding 行政區中心點超出 2km 半徑，
+  > 屬搜尋 bug 而非資料缺口。詳見下方「修正『南港』查無結果」一則。
+  > 教訓：`analyze_conversations.py` 的「盲區」只代表**實跑查不到**，
+  > 不等於**資料庫沒有**，兩者不可畫上等號。
 - PENDING.md 有 4 個主 app 待辦被誤掛在 `[SLM] 意圖路由器自訓練` 段落下，已移出
   另立 `[APP] 對話品質待辦`。
 
@@ -807,6 +811,10 @@ commit `7d2bd43`，merge `d951dcd`，CI/CD run `33290802925` success。
 > 的同名迴圈而刪掉 `def filter_ramen_data`；以及 `results.append(shop)` 縮排錯誤
 > 被塞進 `if open_now` 區塊內（導致 15 個測試失敗）。兩次都由測試套件即時擋下。
 
+### 上線
+commit `f69d4b2`，merge `a648dff`，CI/CD run `33292165495` success。
+正式環境 revision **`ramen-bot-00081-xzg` → `ramen-bot-00082-srb`**，六項預熱全部完成。
+
 
 ## 2026-08-30（傍晚）— 「台/臺」異體字正規化
 
@@ -843,6 +851,10 @@ Places API 回傳值寫回本地（含把「台」正規化為「臺」）。屬
 `pytest` **211 passed**（前次 192，+19）／`e2e_test.py --full` 全部自動檢查通過／
 新增行 0 行超過 88 字元。
 
+### 上線
+commit `61ae8de`，merge `cc75008`，CI/CD run `33294187120` success。
+正式環境 revision **`ramen-bot-00082-srb` → `ramen-bot-00083-qz9`**。
+
 
 ## 2026-08-30（晚間）— 完整行政區名查不到
 
@@ -871,4 +883,21 @@ Places API 回傳值寫回本地（含把「台」正規化為「臺」）。屬
 `新北市板橋區` 由 0 筆變為有結果；十個既有查詢筆數完全不變。
 
 ### 驗證
-`pytest` **222 passed**（前次 211，+11）／新增行 0 行超過 88 字元。
+`pytest` **222 passed**（前次 211，+11）／`e2e_test.py --full` 全部自動檢查通過／
+新增行 0 行超過 88 字元。
+
+### 上線
+commit `96a8de0`，merge `7d12bf3`，CI/CD success。
+正式環境 revision **`ramen-bot-00083-qz9` → `ramen-bot-00084-6xs`**。
+
+> 本日共四次部署：00080（意圖分類與回覆品質）→ 00082（南港查無結果 + 避免重複推薦）
+> → 00083（台/臺 異體字）→ 00084（完整行政區名）。
+> 00081 為純文件 commit 觸發的重建，程式碼與 00080 相同——`deploy.yml` 對 main 的
+> **任何** push 都會觸發部署，文件變更也會產生新 revision。
+> 測試數 160 → 222。
+
+### 回退
+```
+git revert -m 1 7d12bf3 && git push origin main      # 單獨回退本次
+gcloud run services update-traffic ramen-bot   --region=asia-east1 --to-revisions=ramen-bot-00083-qz9=100
+```
