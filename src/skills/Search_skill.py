@@ -636,6 +636,29 @@ def normalize_tai(text: str) -> str:
     return _TAI_PATTERN.sub(lambda m: "臺" + m.group(1), text or "")
 
 
+def clean_location(text: str) -> str:
+    """
+    將地名正規化為可比對的形式：去掉行政層級用字，並統一「台/臺」寫法。
+
+    **查詢與店家 location 兩側都必須套用**。只清查詢側會讓
+    「臺北市中山區」查不到 location 同樣是「臺北市中山區」的店家——
+    查詢被清成「臺北中山」、店家仍是「臺北市中山區」，兩邊互不為子字串。
+
+    Parameters
+    ----------
+    text : str
+        地名字串（使用者查詢或店家 location 欄位）。
+
+    Returns
+    -------
+    str
+        去除「市/區/縣」並正規化「台→臺」後的字串。
+    """
+    return normalize_tai(
+        (text or "").replace("市", "").replace("區", "").replace("縣", "")
+    )
+
+
 # 資料集除大台北外，也收錄使用者旅日時記錄的店家（大阪 9、福岡 5、東京 5、
 # 熊本 2、奈良 1，共 22 筆）。使用者未指定地區時，這些店家會與台灣店家一同
 # 進入隨機抽選，推薦出使用者根本去不了的店（見 DEVELOP_HISTORY.md 2026-06-29
@@ -784,12 +807,8 @@ def filter_ramen_data(
                         shop["distance_km"] = round(dist, 2)
                 else:
                     # 店家無座標資料，則回退至字串比對
-                    clean_target_loc = normalize_tai(
-                        target_location.replace("市", "")
-                        .replace("區", "")
-                        .replace("縣", "")
-                    )
-                    shop_loc = normalize_tai(shop.get("location") or "")
+                    clean_target_loc = clean_location(target_location)
+                    shop_loc = clean_location(shop.get("location") or "")
                     # shop_loc 為空字串時，"" in clean_target_loc 恆為 True，
                     # 須先排除以避免缺少 location 欄位的店家誤配對任何地區查詢。
                     if shop_loc and (
@@ -798,12 +817,8 @@ def filter_ramen_data(
                         match_location = True
             else:
                 # 無目標座標資料，使用字串比對
-                clean_target_loc = normalize_tai(
-                    target_location.replace("市", "")
-                    .replace("區", "")
-                    .replace("縣", "")
-                )
-                shop_loc = normalize_tai(shop.get("location") or "")
+                clean_target_loc = clean_location(target_location)
+                shop_loc = clean_location(shop.get("location") or "")
                 if shop_loc and (
                     clean_target_loc in shop_loc or shop_loc in clean_target_loc
                 ):

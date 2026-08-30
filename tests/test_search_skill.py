@@ -11,6 +11,7 @@ import pytest
 import skills.Search_skill as search_skill
 from skills.Search_skill import (
     calculate_distance,
+    clean_location,
     normalize_tai,
     build_shop_summary,
     _build_geocode_query,
@@ -55,6 +56,36 @@ class TestNormalizeTai:
     def test_empty_input(self):
         assert normalize_tai("") == ""
         assert normalize_tai(None) == ""
+
+
+# ─── clean_location ────────────────────────────────────────────────────────────
+
+class TestCleanLocation:
+    """查詢與店家 location 兩側都須套用同一套正規化。只清查詢側會讓
+    「臺北市中山區」查不到 location 同樣是「臺北市中山區」的店家——
+    查詢被清成「臺北中山」、店家仍是「臺北市中山區」，互不為子字串。"""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("臺北市中山區", "臺北中山"),
+            ("台北市中山區", "臺北中山"),
+            ("中山區", "中山"),
+            ("臺北市", "臺北"),
+            ("新竹縣竹北市", "新竹竹北"),
+            ("大阪市", "大阪"),
+        ],
+    )
+    def test_strips_admin_words_and_normalizes_tai(self, raw, expected):
+        assert clean_location(raw) == expected
+
+    def test_both_sides_produce_same_key(self):
+        """核心不變量：同一個地方的不同寫法必須清出同一個字串。"""
+        assert clean_location("臺北市中山區") == clean_location("台北市中山區")
+
+    def test_empty_input(self):
+        assert clean_location("") == ""
+        assert clean_location(None) == ""
 
 
 # ─── calculate_distance ────────────────────────────────────────────────────────
@@ -390,6 +421,16 @@ class TestFilterRamenDataStyleAndCombined:
         ids = [s["id"] for s in result]
         assert "shop_zhongshan_tonkotsu" in ids
         assert "shop_daan_tonkotsu" not in ids
+
+    @pytest.mark.parametrize(
+        "query", ["臺北市中山區", "台北市中山區", "中山區"]
+    )
+    def test_full_district_name_matches(self, query):
+        """使用者打完整行政區名（含市與區）也要查得到。
+        修正前「臺北市中山區」回 0 筆，而「中山區」回 3 筆——因為只清了查詢側。"""
+        result = filter_ramen_data({"location": query})
+        assert result
+        assert "shop_zhongshan_tonkotsu" in [s["id"] for s in result]
 
     def test_tai_variant_query_matches_shop_data(self):
         """使用者打「台中」而店家存「臺中市西區」時應比對得到。"""
