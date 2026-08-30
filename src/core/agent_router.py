@@ -8,6 +8,7 @@ from google import genai
 from google.genai import types
 
 from skills.Search_skill import (
+    GENERIC_STYLE_KEYWORDS,
     filter_ramen_data,
     generate_recommendations,
     summarize_description,
@@ -34,6 +35,31 @@ RESET = '\033[0m'
 # 才是唯一會用真實 GPS 座標做 Haversine 過濾的路徑，僅在使用者分享 LINE
 # 位置訊息時觸發，純文字查詢無法取得座標）。
 _NEAR_ME_PATTERN = re.compile(r"附近|我這|我這裡|目前位置|現在位置|所在位置|current location|near me", re.IGNORECASE)
+
+# 使用者詢問「這個機器人怎麼用」時比對用。這類問句不含拉麵知識，卻會被意圖解析
+# 判為 KNOWLEDGE_QUERY 而進入 RAG 檢索、答非所問（實例：2026-08-06 日誌「怎麼使用」）。
+# 沿用 _NEAR_ME_PATTERN 的作法在 STEP 1 之後攔截並回固定說明文案，不新增第五種
+# intent（單一情境不值得擴充 schema），也不再多花一次 LLM 呼叫。
+_HELP_PATTERN = re.compile(
+    r"怎麼使用|怎麼用|如何使用|使用說明|使用方式|有什麼功能|能做什麼|會做什麼|^help$",
+    re.IGNORECASE,
+)
+# 長度上限：問用法的句子都很短，藉此擋掉把用法詞夾在長句中的知識問題。
+_HELP_MAX_LEN = 15
+# 主詞守門：只有在句子確實在問「這個機器人」時才攔截。
+# 這裡刻意用**正面表列**而非排除表列——「X 怎麼用」的 X 可以是任何拉麵領域名詞
+# （食券機、替玉、海苔、餐券…），那是一份開放式清單，永遠列不完；漏列一個就會把
+# 本來能被 knowledge/ramen_etiquette.md 答出來的問題誤判成「問機器人用法」。
+# 反過來看，「這個機器人怎麼用」的主詞集合是封閉且很小的，判斷因此穩定得多。
+_HELP_SUBJECT_PATTERN = re.compile(r"這個|這裡|你|妳|機器人|bot|系統", re.IGNORECASE)
+_HELP_MESSAGE = (
+    "我可以幫你做這些事：\n"
+    "・找店：例如「中山區推薦的拉麵」「台北的豚骨拉麵」\n"
+    "・找附近：直接分享你的位置，或說「附近有什麼拉麵」\n"
+    "・問特定店家：例如「麵魚好吃嗎」\n"
+    "・拉麵知識：例如「札幌拉麵的特色是什麼」\n"
+    "・回報錯誤：例如「這家店的地址不對」"
+)
 
 # 意圖解析結構化輸出 Schema：搭配 response_mime_type="application/json"，
 # 讓 Gemini 保證回傳合法 JSON，免除脆弱的字串修補（如全域替換單引號）。
@@ -62,6 +88,25 @@ INTENT_RESPONSE_SCHEMA = types.Schema(
         ),
     },
 )
+
+def _style_or_none(style: Any) -> str | None:
+    """
+    將 Gemini 解析出的 style 正規化為「可用的口味條件」或 None。
+
+    Parameters
+    ----------
+    style : Any
+        意圖解析結果中的 style 欄位值。
+
+    Returns
+    -------
+    str or None
+        可用的口味關鍵字；若為空值或「推薦」等無篩選效力的形容詞則回傳 None。
+    """
+    if not style or style in GENERIC_STYLE_KEYWORDS:
+        return None
+    return style
+
 
 class AgentRouter:
     """
@@ -231,18 +276,41 @@ class AgentRouter:
 
         intent = intent_data.get('intent', 'SEARCH_BY_CRITERIA').upper()
 
+        # 「怎麼使用」這類詢問機器人用法的問句：不進 RAG，直接回固定功能說明。
+        # 命中條件為「夠短」且「用法詞」且（整句就是用法詞 或 主詞指向本機器人）。
+        _help_text = user_text.strip()
+        if (
+            len(_help_text) <= _HELP_MAX_LEN
+            and _HELP_PATTERN.search(_help_text)
+            and (
+                _HELP_PATTERN.fullmatch(_help_text)
+                or _HELP_SUBJECT_PATTERN.search(_help_text)
+            )
+        ):
+            print(f"{YELLOW}STEP: 偵測到詢問機器人用法，回覆功能說明{RESET}")
+            log_conversation(user_text, "HELP", intent_data)
+            return self._fallback_result(_HELP_MESSAGE)
+
         # 「附近」語意但 Gemini 未解析出實際地名：純文字訊息協定層級無座標可用
         # （LINE TextMessage 事件不含經緯度，僅 LocationMessage 才有），不可讓
         # SEARCH_BY_CRITERIA 在 location 為空時當作「不限地區」搜尋全部店家。
         # 改回傳 LOCATION_REQUEST，由 app.py 附加 LINE 位置分享 Quick Reply
         # 按鈕，使用者一鍵分享後會觸發 handle_location 走 filter_by_location()
         # 真正以座標做 Haversine 過濾。
+        # 另涵蓋「我想吃拉麵」這類地區與口味皆未指定的查詢：兩個條件都空時
+        # filter_ramen_data() 同樣會比對「全部」店家而隨機抽出無關店家，與
+        # 「附近」情境是同一個失效模式，故一併導向位置分享流程。
+        # 有口味無地區（例如「沾麵推薦」）不在此列——口味本身已是有效篩選條件，
+        # 由 filter_ramen_data() 的海外店家排除機制處理即可。
         if (
             intent == "SEARCH_BY_CRITERIA"
             and not intent_data.get("location")
-            and _NEAR_ME_PATTERN.search(user_text)
+            and (
+                _NEAR_ME_PATTERN.search(user_text)
+                or _style_or_none(intent_data.get("style")) is None
+            )
         ):
-            print(f"{YELLOW}STEP: 偵測到「附近」語意但無可解析地名，請使用者分享位置{RESET}")
+            print(f"{YELLOW}STEP: 無可用的地區條件，請使用者分享位置{RESET}")
             return self._fallback_result(
                 "請分享您的目前位置，我幫您找附近的拉麵店！",
                 ui_tag="LOCATION_REQUEST",

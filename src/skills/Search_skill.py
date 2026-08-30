@@ -604,6 +604,23 @@ def filter_by_location(
     return results, nearest_km
 
 
+# 使用者說「推薦」「好吃」這類形容詞時，Gemini 偶爾會誤填進 style 欄位。
+# 這不是有效的篩選條件，須視同未指定口味。agent_router 判斷「是否有可用的搜尋
+# 條件」時亦須套用同一份定義，否則兩處對「有 style」的認定會不一致——router
+# 放行、filter 卻清空，等於又落回「無條件 = 比對全部店家」的失效模式。
+GENERIC_STYLE_KEYWORDS = ("推薦", "好吃", "熱門")
+
+# 資料集除大台北外，也收錄使用者旅日時記錄的店家（大阪 9、福岡 5、東京 5、
+# 熊本 2、奈良 1，共 22 筆）。使用者未指定地區時，這些店家會與台灣店家一同
+# 進入隨機抽選，推薦出使用者根本去不了的店（見 DEVELOP_HISTORY.md 2026-06-29
+# 大阪店家誤推薦事件）。僅在「使用者沒講地區」時排除；明確查詢「大阪的拉麵」
+# 時不套用，否則會查不到東西。filter_by_location()（GPS 路徑）不需此過濾，
+# 因其以真實座標做半徑比對，海外店家本就落在範圍外。
+_OVERSEAS_PATTERN = re.compile(
+    r"大阪|東京|福岡|熊本|奈良|京都|北海道|札幌|名古屋|橫濱|神戶|日本"
+)
+
+
 def filter_ramen_data(
     intent_data: Dict[str, Any], current_time: Optional[str] = None
 ) -> List[Dict[str, Any]]:
@@ -633,8 +650,8 @@ def filter_ramen_data(
     target_location = intent_data.get("location") or ""
     target_style = intent_data.get("style") or ""
 
-    # 過濾 AI 誤抓的形容詞
-    if target_style in ["推薦", "好吃", "熱門"]:
+    # 過濾 AI 誤抓的形容詞（定義與 agent_router 共用，見 GENERIC_STYLE_KEYWORDS）
+    if target_style in GENERIC_STYLE_KEYWORDS:
         target_style = ""
 
     # 「現在有開」查詢：解析當下時間，供 is_open_at 過濾營業中的店家
@@ -681,6 +698,12 @@ def filter_ramen_data(
     for _shop in all_shops:
         # 已標記暫停營業的店家不應推薦給使用者
         if "暫停營業" in (_shop.get("name") or ""):
+            continue
+
+        # 使用者未指定地區時排除海外店家（詳見 _OVERSEAS_PATTERN 註解）
+        if not target_location and _OVERSEAS_PATTERN.search(
+            _shop.get("location") or ""
+        ):
             continue
 
         shop = copy.copy(_shop)  # 防止寫入 distance_km 汙染快取中的原始 dict

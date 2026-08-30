@@ -344,6 +344,181 @@ class TestDispatchNearMeWithoutLocation:
         assert result["data"] == [_SAMPLE_SHOP]
 
 
+# ─── 無有效搜尋條件 / 詢問機器人用法 ──────────────────────────────────────────
+
+class TestDispatchNoSearchConditions:
+    """地區與口味皆未解析出來時（例如「我想吃拉麵」），filter_ramen_data() 會把
+    「無條件」視為「符合全部店家」，從整個資料庫（含 22 筆日本店家）隨機抽選，
+    推薦出使用者根本去不了的店。此情境與「附近」語意是同一個失效模式，應同樣
+    導向位置分享流程。"""
+
+    def test_no_location_and_no_style_returns_location_request(
+        self, router, monkeypatch
+    ):
+        router.client.models.generate_content.return_value = _make_gemini_response({
+            "intent": "SEARCH_BY_CRITERIA",
+            "location": None,
+            "style": None,
+            "shop_name": None,
+            "query": None,
+            "ui_tag": "CAROUSEL",
+        })
+        called = []
+        monkeypatch.setattr(
+            "core.agent_router.filter_ramen_data",
+            lambda intent_data, current_time=None: called.append(intent_data),
+        )
+
+        result = router.dispatch("我想吃拉麵")
+
+        assert result["intent"] == "FALLBACK"
+        assert result["ui_tag"] == "LOCATION_REQUEST"
+        assert not called  # 不可落入「無條件 = 搜尋全部」的路徑
+
+    def test_generic_style_word_is_not_a_valid_condition(
+        self, router, monkeypatch
+    ):
+        """Gemini 偶爾會把「推薦」這類形容詞誤填進 style。filter_ramen_data() 有
+        GENERIC_STYLE_KEYWORDS 會將其清空，router 若不套用同一份定義就會放行，
+        等於又落回「無條件 = 比對全部店家」的失效模式。"""
+        router.client.models.generate_content.return_value = _make_gemini_response({
+            "intent": "SEARCH_BY_CRITERIA",
+            "location": None,
+            "style": "推薦",
+            "shop_name": None,
+            "query": None,
+            "ui_tag": "CAROUSEL",
+        })
+        called = []
+        monkeypatch.setattr(
+            "core.agent_router.filter_ramen_data",
+            lambda intent_data, current_time=None: called.append(intent_data),
+        )
+
+        result = router.dispatch("有推薦的拉麵嗎")
+
+        assert result["ui_tag"] == "LOCATION_REQUEST"
+        assert not called
+
+    def test_style_without_location_still_searches(self, router, monkeypatch):
+        """有口味無地區（「沾麵推薦」）：口味本身已是有效篩選條件，應照常搜尋，
+        海外店家的排除交由 filter_ramen_data() 處理。"""
+        router.client.models.generate_content.return_value = _make_gemini_response({
+            "intent": "SEARCH_BY_CRITERIA",
+            "location": None,
+            "style": "沾麵",
+            "shop_name": None,
+            "query": None,
+            "ui_tag": "CAROUSEL",
+        })
+        monkeypatch.setattr(
+            "core.agent_router.filter_ramen_data",
+            lambda intent_data, current_time=None: [_SAMPLE_SHOP],
+        )
+        monkeypatch.setattr(
+            "core.agent_router.generate_recommendations",
+            lambda shops, client, model, num_shops: ["推薦文A"],
+        )
+
+        result = router.dispatch("沾麵推薦")
+
+        assert result["intent"] == "SEARCH_BY_CRITERIA"
+        assert result["data"] == [_SAMPLE_SHOP]
+
+
+class TestDispatchHelpQuery:
+    """「怎麼使用」這類詢問機器人用法的問句不含拉麵知識，卻會被意圖解析判為
+    KNOWLEDGE_QUERY 而進入 RAG 檢索、答非所問（實例：2026-08-06 正式環境日誌）。
+    應在 STEP 1 之後攔截並回固定功能說明，不呼叫知識庫。"""
+
+    def test_help_query_returns_usage_message_without_rag(self, router):
+        router.client.models.generate_content.return_value = _make_gemini_response({
+            "intent": "KNOWLEDGE_QUERY",
+            "location": None,
+            "style": None,
+            "shop_name": None,
+            "query": "怎麼使用",
+            "ui_tag": "TEXT",
+        })
+
+        result = router.dispatch("怎麼使用")
+
+        assert result["intent"] == "FALLBACK"
+        assert "找店" in result["message"]
+        # ui_tag 須為 TEXT——若誤設為 LOCATION_REQUEST，app.py 會多掛一顆
+        # 「分享位置」按鈕在功能說明底下
+        assert result["ui_tag"] == "TEXT"
+        router.knowledge_skill.answer.assert_not_called()
+
+    def test_bot_name_containing_ramen_is_still_intercepted(self, router):
+        """本 bot 自身就叫「拉麵機器人」，主詞守門須認得「機器人」，
+        否則「拉麵機器人怎麼用」會被放行、又落回 RAG（即原 bug 重現）。"""
+        router.client.models.generate_content.return_value = _make_gemini_response({
+            "intent": "KNOWLEDGE_QUERY",
+            "location": None,
+            "style": None,
+            "shop_name": None,
+            "query": "怎麼用",
+            "ui_tag": "TEXT",
+        })
+
+        result = router.dispatch("拉麵機器人怎麼用")
+
+        assert result["intent"] == "FALLBACK"
+        assert "找店" in result["message"]
+        router.knowledge_skill.answer.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "question",
+        ["替玉怎麼用比較好吃呢", "食券機怎麼用", "餐券怎麼用", "海苔怎麼用"],
+    )
+    def test_ramen_question_containing_how_to_use_is_not_intercepted(
+        self, router, question
+    ):
+        """「X 怎麼用」的 X 若是拉麵領域名詞（食券機、替玉、海苔…）屬知識問題，
+        不可被誤攔。`knowledge/ramen_etiquette.md` 的「券機文化」條目即可回答
+        食券機相關問題，攔截掉等同讓既有可用行為退步。"""
+        router.client.models.generate_content.return_value = _make_gemini_response({
+            "intent": "KNOWLEDGE_QUERY",
+            "location": None,
+            "style": None,
+            "shop_name": None,
+            "query": "替玉怎麼用",
+            "ui_tag": "TEXT",
+        })
+        router.knowledge_skill.answer.return_value = "替玉是加麵的意思。"
+
+        result = router.dispatch(question)
+
+        assert result["intent"] == "KNOWLEDGE_QUERY"
+        router.knowledge_skill.answer.assert_called_once()
+
+
+
+# ─── Prompt 內容防退化 ────────────────────────────────────────────────────────
+
+class TestKnowledgePromptGuards:
+    """`KNOWLEDGE_ANSWER_PROMPT` 的幾條規則是靠 LINE 實機才發現需要的，單元測試
+    無法驗證 LLM 實際輸出，故退而守住「規則本身沒有被誤刪」。"""
+
+    def test_prompt_bans_meta_reference_to_data_source(self):
+        """2026-08-30 實機發現回答開頭出現「知識庫指出」，把內部實作洩漏給使用者。
+        禁令若被移除，實機才會再次發現，代價很高。"""
+        from core.prompts import KNOWLEDGE_ANSWER_PROMPT
+
+        assert "絕對不要提到資料來源本身" in KNOWLEDGE_ANSWER_PROMPT
+        for banned in ["知識庫", "資料庫", "根據檢索", "資料顯示"]:
+            assert banned in KNOWLEDGE_ANSWER_PROMPT
+
+    def test_prompt_keeps_hard_length_cap(self):
+        """LINE 上過長的文字會被硬切斷（見 search_skill BUG 5），字數上限不可移除。"""
+        from core.prompts import KNOWLEDGE_ANSWER_PROMPT
+
+        assert "200 字" in KNOWLEDGE_ANSWER_PROMPT
+        assert "硬性上限" in KNOWLEDGE_ANSWER_PROMPT
+
+
+
 # ─── STEP 1 暫時性錯誤重試 ─────────────────────────────────────────────────────
 
 class TestDispatchTransientRetry:
