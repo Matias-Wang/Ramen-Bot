@@ -330,7 +330,11 @@ Ramen-Bot/
 │   │   ├── flex_handler.py      # [CORE] UI 渲染引擎
 │   │   ├── prompts.py           # LLM Prompt 存放處
 │   │   ├── conversation_logger.py  # 對話特徵埋點（雲端 conversation_logs，本地 no-op）
+│   │   ├── message_dedup.py     # Webhook 訊息去重（記憶體 / Firestore 雙路徑）
 │   │   ├── recent_shops.py      # 每位使用者近期已推薦店家（記憶體，供排除重複）
+│   │   ├── llm_retry.py         # Gemini 暫時性錯誤（503/429/逾時）指數退避重試
+│   │   ├── timing.py            # 端到端與各 LLM 呼叫耗時計時（contextvars）
+│   │   ├── obs.py               # 結構化事件日誌（單行 JSON，供 Cloud Logging 解析）
 │   │   └── usage_tracker.py     # 每日配額檢查（本地 JSON / Firestore 雙路徑）
 │   ├── skills/
 │   │   ├── Search_skill.py      # [SKILL 1] 條件搜尋（本地 JSON / Firestore 雙路徑）
