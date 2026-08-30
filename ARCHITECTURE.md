@@ -98,6 +98,11 @@
        - 捷運站等精確點查詢 → Geocoding 取目標座標 → Haversine 計算距離 →
          預設 **2km** 以內；查無座標則同樣回退至上述字串比對。使用者若明確指定
          範圍（intent 的 `radius_km`，例如「方圓 5 公里」）則覆寫此預設半徑
+       - **座標查詢回 0 筆時，退回字串比對再跑一次**（`_collect(None)`）。針對
+         「南港」這種「是行政區名、但沒帶『區』字」的查詢：Geocoding 回傳行政區
+         幾何中心，實測離唯一的南港店家 2.67km，超出 2km 而回空。與中山區案例
+         同一失效模式，但 `is_district_query` 只認「區/市/縣」結尾會漏掉。
+         只在原本就要回空結果時觸發，不影響任何已能正常回應的查詢
     3. 「現在有開」查詢（intent 的 `open_now` 為真）：以 `is_open_at()` 依店家
        `opening_hours.periods`（Places API 原生結構，day 0=週日）與注入的 `current_time`
        過濾當下營業中的店家；**無營業時間資料的店家一律排除**（無法確認，寧缺勿錯）
@@ -105,7 +110,11 @@
        （資料庫收錄 22 筆使用者旅日記錄）。**僅在使用者沒指定地區時套用**——明確查詢
        「大阪」時不可排除，否則會查無結果；`filter_by_location()`（GPS 路徑）不需此
        過濾，因半徑比對本就排除海外
-    5. 結果依 `distance_km` 排序（若有座標），超過 3 筆則 `random.sample` 隨機抽選
+    5. 排除該使用者近期已推薦過的店家（`core/recent_shops.py`），讓「還有其他的
+       嗎？」真的換一批；排除後不足 3 間則放棄排除（寧可重複也不少給結果）。
+       識別鍵用 `place_id` 而非 `id`——`ramen_data.json` 以料理為單位，同一家店
+       有多筆口味變體，用 `id` 會讓同一家店以不同變體逃過排除
+    6. 結果依 `distance_km` 排序（若有座標），超過 3 筆則 `random.sample` 隨機抽選
 - **推薦文生成**：`ThreadPoolExecutor` + 預熱 Client Pool 並行呼叫 Gemini，最多 3 筆
 - **輸出格式**：`FlexMessage` Carousel（最多 3 個 bubble，含 Map 按鈕 + social_links 按鈕）
 - **今日營業時段顯示**：`core/flex_handler.py` 的 `_format_opening_hours()` 直接由
@@ -171,6 +180,14 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
 > 對應 `line_response_usage.md` 第一階段（內容已併入本文件後刪除原檔）；第二、三階段（多模態事件、SLM 微調）列為後續優化項目，詳見 `PENDING.md`。
 
 - **訊息去重 (`event.message.id`)**：`src/core/message_dedup.py` 的 `is_duplicate_message()` 在 `handle_message` 啟動背景執行緒前檢查，重複請求直接跳過（仍回 200），避免 LINE webhook 重送導致 Gemini 被重複觸發計費。本地：記憶體 `set`；生產：Firestore `processed_message_ids` collection（雙路徑判斷邏輯同 `DATA_BACKEND`）。
+- **避免重複推薦 (`src/core/recent_shops.py`)**：記錄每位使用者最近一次被推薦的店家，
+  下次搜尋時排除，讓「還有其他的嗎？」真的換一批。**刻意只做記憶體實作，兩種
+  `DATA_BACKEND` 皆同**——與訊息去重的需求不同：去重跨實例失效會導致 Gemini 重複
+  計費、必須正確；而重複推薦失效的代價僅是使用者看到相同結果。生產 `maxScale=3`，
+  同一使用者的連續訊息可能落在不同實例而讀不到記錄，屬可接受降級；改用 Firestore
+  等於在每次搜尋的熱路徑多一次讀寫，與同檔案為省延遲而做的 stale-while-revalidate
+  快取自相矛盾。只記最近一次、不累積（否則反覆查同一地區會越推越少），TTL 30 分鐘
+  （否則使用者隔天查同一地區會莫名被排除）。
 - **時間感知 (`event.timestamp`)**：`handle_message` 將毫秒時戳轉換為台北時間字串，透過 `AgentRouter.dispatch(user_text, current_time=...)` 注入 STEP 1 意圖解析的 `contents`，供 Gemini 解析「今天」、「最近」等相對時間用語。
   - 注：營業時間欄位已於 2026-07-04 補齊（179 筆中 168 筆有實際時段），「現在有開的店」查詢已可運作，見上方 Search Skill 的 `open_now` 過濾。
 - **來源環境分流 (`event.source.type`)**：`handle_message` 最前面判斷，非一對一私聊（`source.type != "user"`，即群組/多人聊天室）直接忽略、不呼叫 Gemini。範圍經使用者確認：目前不需要 @ 標記偵測。
@@ -307,6 +324,7 @@ Ramen-Bot/
 │   │   ├── flex_handler.py      # [CORE] UI 渲染引擎
 │   │   ├── prompts.py           # LLM Prompt 存放處
 │   │   ├── conversation_logger.py  # 對話特徵埋點（雲端 conversation_logs，本地 no-op）
+│   │   ├── recent_shops.py      # 每位使用者近期已推薦店家（記憶體，供排除重複）
 │   │   └── usage_tracker.py     # 每日配額檢查（本地 JSON / Firestore 雙路徑）
 │   ├── skills/
 │   │   ├── Search_skill.py      # [SKILL 1] 條件搜尋（本地 JSON / Firestore 雙路徑）
