@@ -11,12 +11,50 @@ import pytest
 import skills.Search_skill as search_skill
 from skills.Search_skill import (
     calculate_distance,
+    normalize_tai,
     build_shop_summary,
     _build_geocode_query,
     filter_ramen_data,
     filter_by_location,
     is_open_at,
 )
+
+
+# ─── normalize_tai ─────────────────────────────────────────────────────────────
+
+class TestNormalizeTai:
+    """店家 location 一律用「臺」（Places API 回寫的官方寫法），使用者卻幾乎都打
+    「台」，字串比對因此落空（實測 location="台北市" 回 0 筆、「臺北市」回 3 筆）。"""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("台北市", "臺北市"),
+            ("台中市西區", "臺中市西區"),
+            ("台南市東區", "臺南市東區"),
+            ("台東縣", "臺東縣"),
+            ("台灣", "臺灣"),
+            ("台北市中山區", "臺北市中山區"),
+        ],
+    )
+    def test_five_place_words_are_normalized(self, raw, expected):
+        assert normalize_tai(raw) == expected
+
+    @pytest.mark.parametrize(
+        "word",
+        ["舞台", "電台", "平台", "台階", "燈台", "天台", "台語", "站台", "後台"],
+    )
+    def test_other_tai_words_untouched(self, word):
+        """「台」在這些詞裡並不是「臺」的異體，全域替換會製造出錯誤的字。
+        這是刻意只處理五個地名詞的原因。"""
+        assert normalize_tai(word) == word
+
+    def test_already_normalized_is_unchanged(self):
+        assert normalize_tai("臺北市") == "臺北市"
+
+    def test_empty_input(self):
+        assert normalize_tai("") == ""
+        assert normalize_tai(None) == ""
 
 
 # ─── calculate_distance ────────────────────────────────────────────────────────
@@ -211,6 +249,15 @@ def _make_test_shops() -> list[dict]:
             "coordinates": {"lat": 34.6937, "lng": 135.5023},
         },
         {
+            # 正式資料的 location 一律是「臺」（Places API 回寫）；測試資料其餘
+            # 店家用「台」，故此筆用「臺」以涵蓋正規化的兩個方向。
+            "id": "shop_taichung",
+            "name": "台中拉麵",
+            "location": "臺中市西區",
+            "style": "醬油",
+            "coordinates": {"lat": 24.1420, "lng": 120.6640},
+        },
+        {
             "id": "shop_nangang",
             "name": "南港拉麵",
             "location": "台北市南港區",
@@ -343,6 +390,17 @@ class TestFilterRamenDataStyleAndCombined:
         ids = [s["id"] for s in result]
         assert "shop_zhongshan_tonkotsu" in ids
         assert "shop_daan_tonkotsu" not in ids
+
+    def test_tai_variant_query_matches_shop_data(self):
+        """使用者打「台中」而店家存「臺中市西區」時應比對得到。"""
+        result = filter_ramen_data({"location": "台中市"})
+        assert "shop_taichung" in [s["id"] for s in result]
+
+    def test_tai_variant_shop_matched_by_normalized_query(self):
+        """反向：店家存「台北市中山區」而使用者打「臺北市」也應比對得到。
+        （正式資料的 location 是「臺」、測試資料是「台」，兩個方向都須成立。）"""
+        result = filter_ramen_data({"location": "臺北市"})
+        assert result
 
     def test_user_id_reaches_recent_shops_store(self):
         """驗證 user_id 確實從 filter_ramen_data 一路傳到 recent_shops，

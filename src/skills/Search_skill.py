@@ -611,6 +611,31 @@ def filter_by_location(
 # 放行、filter 卻清空，等於又落回「無條件 = 比對全部店家」的失效模式。
 GENERIC_STYLE_KEYWORDS = ("推薦", "好吃", "熱門")
 
+# 「台/臺」異體字正規化。店家 `location` 一律是「臺」（Places API 回寫的官方寫法），
+# 但使用者幾乎都打「台」，字串比對因此落空——實測 `location="台北市"` 回 0 筆、
+# 「臺北市」回 3 筆。
+# **刻意只處理這五個地名詞**：「台」在其他詞裡並不是「臺」的異體（舞台、電台、
+# 平台、台階、燈台、天台），全域替換會製造出錯誤的字。
+_TAI_PATTERN = re.compile(r"台(北|中|南|東|灣)")
+
+
+def normalize_tai(text: str) -> str:
+    """
+    將「台北/台中/台南/台東/台灣」正規化為「臺」字寫法。
+
+    Parameters
+    ----------
+    text : str
+        待正規化的文字（使用者查詢地名或店家 location 欄位）。
+
+    Returns
+    -------
+    str
+        正規化後的文字；輸入為 None 或空字串時回傳空字串。
+    """
+    return _TAI_PATTERN.sub(lambda m: "臺" + m.group(1), text or "")
+
+
 # 資料集除大台北外，也收錄使用者旅日時記錄的店家（大阪 9、福岡 5、東京 5、
 # 熊本 2、奈良 1，共 22 筆）。使用者未指定地區時，這些店家會與台灣店家一同
 # 進入隨機抽選，推薦出使用者根本去不了的店（見 DEVELOP_HISTORY.md 2026-06-29
@@ -759,12 +784,12 @@ def filter_ramen_data(
                         shop["distance_km"] = round(dist, 2)
                 else:
                     # 店家無座標資料，則回退至字串比對
-                    clean_target_loc = (
+                    clean_target_loc = normalize_tai(
                         target_location.replace("市", "")
                         .replace("區", "")
                         .replace("縣", "")
                     )
-                    shop_loc = shop.get("location") or ""
+                    shop_loc = normalize_tai(shop.get("location") or "")
                     # shop_loc 為空字串時，"" in clean_target_loc 恆為 True，
                     # 須先排除以避免缺少 location 欄位的店家誤配對任何地區查詢。
                     if shop_loc and (
@@ -773,12 +798,12 @@ def filter_ramen_data(
                         match_location = True
             else:
                 # 無目標座標資料，使用字串比對
-                clean_target_loc = (
+                clean_target_loc = normalize_tai(
                     target_location.replace("市", "")
                     .replace("區", "")
                     .replace("縣", "")
                 )
-                shop_loc = shop.get("location") or ""
+                shop_loc = normalize_tai(shop.get("location") or "")
                 if shop_loc and (
                     clean_target_loc in shop_loc or shop_loc in clean_target_loc
                 ):
