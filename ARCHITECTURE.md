@@ -1,4 +1,4 @@
-# RAMEN_BOT_PROJECT_SPEC (v3.4)
+# RAMEN_BOT_PROJECT_SPEC (v3.5)
 
 ## 核心設計哲學 (Core Philosophy)
 本專案不僅是一個聊天機器人，而是一個具備「意圖識別、即時數據、專業知識」三層架構的 AI Agent。系統核心採用 Agentic Router (意圖分發模型)，將需求工具化 (Skill-based)，確保功能擴充時的解耦與穩定性。
@@ -16,6 +16,19 @@
 |KNOWLEDGE_QUERY|拉麵流派、點餐禮儀等百科問答|Knowledge Skill|
 |REPORT_ERROR|使用者指正某間店家資料有誤（地址、描述、評分等）|Feedback Skill|
 
+**意圖判別的兩個易混淆點（已於 `IDENTIFY_INSTRUCTION_PROMPT` 以 few-shot 固定）**：
+- 「X 的特色」句型須看 X 是**流派**（札幌／博多／豚骨…→ KNOWLEDGE_QUERY）還是
+  **店家專有名稱**（→ GET_SPECIFIC_INFO 並填 `shop_name`）。判斷只看 X 本身，
+  不受前後文影響——`dispatch()` 本就不帶對話歷史，誤判源於表層句型而非上下文污染。
+- `location` 必須是**單一地名**；使用者一次講多個地點時只取第一個
+  （複數情境的正式支援尚未實作，見 PENDING.md `[APP]` 段落）。
+
+**STEP 1 之後的兩道前置攔截（皆非 intent，不擴充 schema）**：
+| 攔截 | 條件 | 回應 |
+|------|------|------|
+|功能說明|`_HELP_PATTERN` 命中、長度 ≤15 字、且（整句就是用法詞 **或** 主詞指向本機器人）|固定功能清單，不進 RAG|
+|位置請求|`SEARCH_BY_CRITERIA` 且 `location` 為空，並且（提及「附近」**或** `style` 也為空）|`ui_tag=LOCATION_REQUEST`，附 LINE 位置分享按鈕|
+
 ### 系統架構
 ```
 [User Input via LINE]
@@ -23,10 +36,16 @@
 [STEP 1] AgentRouter.dispatch() — Gemini 解析意圖
       | intent_data: {intent, location, style, shop_name, radius_km, open_now, ui_tag}
       |
+      +-- 前置攔截（不進 Skill，直接回覆）
+      |       - 問機器人用法 → 固定功能清單（不進 RAG）
+      |       - 無地區可用   → LOCATION_REQUEST + 位置分享按鈕
+      |
 [STEP 2] Skill 執行
       +-- SEARCH_BY_CRITERIA → filter_ramen_data() → [shop list]
-      |       - Geocoding 取座標 → Haversine 半徑 2km 過濾
+      |       - 行政區查詢（區/市/縣結尾）→ 直接比對 location 字串，跳過 Geocoding
+      |       - 精確點查詢 → Geocoding 取座標 → Haversine 半徑 2km 過濾
       |       - 無座標則字串模糊比對 fallback
+      |       - 未指定地區時排除海外店家
       |       - 結果超過 3 筆時 random.sample 隨機抽選
       |
       +-- GET_SPECIFIC_INFO  → InfoSkill.get_shop_info() → [shop]
@@ -37,7 +56,7 @@
       |       - Google Embedding API 嵌入查詢
       |       - 本地：ChromaDB 向量相似度搜尋（Top-3）
       |       - 生產：Firestore KNN find_nearest()（Top-3）
-      |       - Gemini 生成拉麵大師風格回答
+      |       - Gemini 生成知識導覽風格回答（總起句 + ・列點，≤200 字）
       |
       +-- REPORT_ERROR       → collect_report() → 確認訊息文字
       |       - 萃取 shop_name + error_description（來自 Gemini 解析）
@@ -55,6 +74,10 @@
 [STEP 4] flex_handler UI 組裝
       |       - SEARCH_BY_CRITERIA：assemble_carousel() → Flex Carousel（最多 3 個 bubble）
       |       - GET_SPECIFIC_INFO：get_flex_bubble() → 單一 Flex Bubble（含 Map + social_links 按鈕）
+      |
+[STEP 5] app.py 推播組裝
+      |       - 引導文（TextMessage）+ Flex 併入同一個 push_message 的 messages 陣列
+      |         LINE 單次 push 可帶 5 則訊息 → 不增加 push 次數、不影響端到端 KPI
       |
 [LINE Flex Message Response]
 ```
@@ -78,7 +101,11 @@
     3. 「現在有開」查詢（intent 的 `open_now` 為真）：以 `is_open_at()` 依店家
        `opening_hours.periods`（Places API 原生結構，day 0=週日）與注入的 `current_time`
        過濾當下營業中的店家；**無營業時間資料的店家一律排除**（無法確認，寧缺勿錯）
-    4. 結果依 `distance_km` 排序（若有座標），超過 3 筆則 `random.sample` 隨機抽選
+    4. 海外店家排除：`target_location` 為空時，以 `_OVERSEAS_PATTERN` 跳過日本店家
+       （資料庫收錄 22 筆使用者旅日記錄）。**僅在使用者沒指定地區時套用**——明確查詢
+       「大阪」時不可排除，否則會查無結果；`filter_by_location()`（GPS 路徑）不需此
+       過濾，因半徑比對本就排除海外
+    5. 結果依 `distance_km` 排序（若有座標），超過 3 筆則 `random.sample` 隨機抽選
 - **推薦文生成**：`ThreadPoolExecutor` + 預熱 Client Pool 並行呼叫 Gemini，最多 3 筆
 - **輸出格式**：`FlexMessage` Carousel（最多 3 個 bubble，含 Map 按鈕 + social_links 按鈕）
 - **今日營業時段顯示**：`core/flex_handler.py` 的 `_format_opening_hours()` 直接由
@@ -116,8 +143,12 @@
     2. 呼叫 Google Embedding API 建立向量索引，持久化至 `knowledge/.chroma_db/`
     3. 若索引已存在則直接載入，不重複建立（刪除 `.chroma_db/` 可強制重建）
     4. 查詢時嵌入問題（`task_type=retrieval_query`），取 Top-3 相關段落
-    5. 組合 context 後交由 Gemini 以「拉麵大師」語氣生成回答
+    5. 組合 context 後交由 Gemini 以「知識導覽系統」語氣生成回答（客觀、精準，
+       避免感嘆詞與情感性形容詞）
 - **Prompt**：`KNOWLEDGE_ANSWER_PROMPT`（位於 `src/core/prompts.py`）
+- **輸出版型（固定）**：一句總起（25 字內）＋空行＋2～4 點「・重點詞：說明」，
+  總長硬性上限 200 字。列點一律用全形「・」，明列禁用 Markdown 符號——
+  LINE Flex `text` 元件不支援 Markdown，殘留符號會直接顯示給使用者
 
 ---
 

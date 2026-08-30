@@ -35,10 +35,44 @@ IDENTIFY_INSTRUCTION_PROMPT = """
 - open_now: 使用者若要找「現在有開」「營業中」「現在能吃」的店家則給 true；否則給 null。
 - ui_tag: 搜尋結果建議用 "CAROUSEL"，單一店家資訊、百科或錯誤回報建議用 "TEXT"。
 
+# KNOWLEDGE_QUERY 與 GET_SPECIFIC_INFO 的判別（最容易搞混，務必遵守）：
+「X 的特色 / X 好吃嗎 / 介紹一下 X」這種句型，要看 X 是「流派」還是「店名」：
+- X 屬於下列**拉麵流派或地方拉麵**者 → KNOWLEDGE_QUERY，shop_name 給 null：
+  醬油、鹽味、味噌、豚骨、家系、二郎系、青葉系、大勝軒、沾麵、
+  札幌、喜多方、博多、德島、燕三条、熊本等「地名＋拉麵」的日本地方流派。
+- X 是**個別店家的專有名稱**（不在上述流派清單中）→ GET_SPECIFIC_INFO，
+  並把 X 填入 shop_name。
+- 判斷依據只看 X 本身，**不要受前後文或先前話題影響**。
+
+# 範例（請嚴格比照）：
+輸入：札幌拉麵的特色是什麼
+輸出：{"intent": "KNOWLEDGE_QUERY", "location": null, "style": null, "shop_name": null,
+      "query": "札幌拉麵的特色", "radius_km": null, "open_now": null, "ui_tag": "TEXT"}
+
+輸入：告訴我麵魚的特色
+輸出：{"intent": "GET_SPECIFIC_INFO", "location": null, "style": null, "shop_name": "麵魚",
+      "query": "麵魚的特色", "radius_km": null, "open_now": null, "ui_tag": "TEXT"}
+
+輸入：木麒麟拉麵好吃嗎
+輸出：{"intent": "GET_SPECIFIC_INFO", "location": null, "style": null,
+      "shop_name": "木麒麟拉麵", "query": "木麒麟拉麵好吃嗎", "radius_km": null,
+      "open_now": null, "ui_tag": "TEXT"}
+
+輸入：中山區推薦的拉麵
+輸出：{"intent": "SEARCH_BY_CRITERIA", "location": "中山區", "style": null,
+      "shop_name": null, "query": "中山區推薦的拉麵", "radius_km": null,
+      "open_now": null, "ui_tag": "CAROUSEL"}
+
+輸入：這家店的地址寫錯了
+輸出：{"intent": "REPORT_ERROR", "location": null, "style": null, "shop_name": null,
+      "query": "地址寫錯了", "radius_km": null, "open_now": null, "ui_tag": "TEXT"}
+
 # 規則限制：
 - 只輸出一個 JSON 物件，不能有任何解釋文字。
 - 不要輸出 Markdown（不要 ```）。
 - 字串一律用雙引號。
+- location 必須是**單一地名**。使用者若一次講了多個地點（例如「南港或東湖」），
+  只取第一個地名填入，絕對不要把「南港或東湖」這種整串文字當成一個地名。
 """
 
 # 知識介紹LLM Prompt
@@ -58,9 +92,22 @@ KNOWLEDGE_ANSWER_PROMPT = """
 # 回答規則：
 - 使用繁體中文回答
 - 語氣：客觀、精準，像是食品百科或博物館導覽手冊，避免感嘆詞與情感性形容詞
-- 回答長度約 100～200 字
-- 若知識庫內容不足以完整回答，誠實說明並給予一般性說明
-- 只輸出回答內容，不要輸出 Markdown 標題（不要 # 或 ##）或 JSON
+- **絕對不要提到資料來源本身**。禁止出現「知識庫」「資料庫」「根據檢索」「資料顯示」
+  「以上資料」等字眼——使用者要的是拉麵知識，不是系統怎麼查到的。直接就內容作答。
+- 若可用內容不足以完整回答，就**把確定的部分講完即可**，並用一句話帶過尚無更詳細資訊
+  （例如「更細節的操作方式各店略有不同」），不要編造。
+  此情況下**不套用下方列點版型**，改以 100 字內的純文字回答。
+
+# 輸出版型（知識庫內容足夠時的固定結構，請嚴格遵守）：
+第一行：一句話說明「這是什麼」，25 字以內，不加標點以外的符號。
+接著空一行，然後列出 2～4 點特色，每點格式為「・重點詞：說明」，每點 40 字以內。
+
+# 輸出字數與格式限制：
+- 全文總長度（含開頭那句與所有列點）硬性上限 200 字，不可超過。
+  若列點會超過上限，請優先縮短每點文字或減少列點數量，絕不截斷句子。
+- 純文字輸出。不要輸出 JSON，也不要任何 Markdown 語法或強調符號
+  （禁止 ```、**粗體**、*斜體*、# 標題、- 或 * 開頭的清單符號）。
+  列點一律使用全形項目符號「・」。
 """
 # 拉麵店家文案LLM Prompt (RECOMMEND_PROMPT)
 RECOMMEND_PROMPT = """

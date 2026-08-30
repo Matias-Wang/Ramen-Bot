@@ -200,6 +200,13 @@ def _make_test_shops() -> list[dict]:
             "style": "豚骨",
             "coordinates": {"lat": 25.0530, "lng": 121.5200},
         },
+        {
+            "id": "shop_overseas",
+            "name": "大阪豚骨拉麵",
+            "location": "大阪市",
+            "style": "豚骨",
+            "coordinates": {"lat": 34.6937, "lng": 135.5023},
+        },
     ]
 
 
@@ -294,6 +301,18 @@ class TestFilterRamenDataStyleAndCombined:
         result = filter_ramen_data({"style": "豚骨"})
         assert result
         assert all(s["style"] == "豚骨" for s in result)
+
+    def test_overseas_shop_excluded_when_no_location(self):
+        """未指定地區時不應推薦海外店家——使用者根本去不了。
+        （資料庫收錄了使用者旅日時記錄的 22 筆日本店家）"""
+        for _ in range(30):  # 結果為隨機抽選，重複多次確保不是碰巧沒抽到
+            result = filter_ramen_data({"style": "豚骨"})
+            assert "shop_overseas" not in [s["id"] for s in result]
+
+    def test_overseas_shop_included_when_explicitly_queried(self):
+        """明確查詢「大阪」時仍須查得到，排除機制不可誤傷。"""
+        result = filter_ramen_data({"location": "大阪市"})
+        assert "shop_overseas" in [s["id"] for s in result]
 
     def test_generic_style_keyword_is_ignored(self):
         """style 為「推薦」等形容詞時應視為未指定，不會過濾掉所有結果"""

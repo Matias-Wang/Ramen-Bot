@@ -195,9 +195,11 @@ def _reply_to_line(
         # FALLBACK：dispatch 頂層捕捉到的嚴重錯誤，或需要使用者分享位置
         if intent == 'FALLBACK':
             check_and_increment("line_api")
-            # LOCATION_REQUEST：使用者文字提及「附近」但無可解析地名（純文字
-            # 訊息本身無座標），附加 LINE 原生位置分享 Quick Reply，讓使用者
-            # 一鍵分享後觸發 handle_location 走真正的座標篩選。
+            # LOCATION_REQUEST 有兩個觸發來源（見 agent_router）：
+            # (1) 使用者文字提及「附近」但無可解析地名；
+            # (2) 地區與口味皆未指定（例如「我想吃拉麵」）。
+            # 兩者皆因純文字訊息本身無座標，附加 LINE 原生位置分享 Quick Reply，
+            # 讓使用者一鍵分享後觸發 handle_location 走真正的座標篩選。
             quick_reply = None
             if ui_tag == 'LOCATION_REQUEST':
                 quick_reply = QuickReply(items=[
@@ -265,19 +267,34 @@ def _reply_to_line(
                 contents=FlexContainer.from_dict(carousel_contents),
             )
             check_and_increment("line_api")
+            # 引導文與 Flex 併在同一次 push 送出：LINE 單次 push 最多可帶 5 則訊息，
+            # 故不增加 push 次數，也不影響端到端 KPI。
             line_bot_api.push_message(
-                PushMessageRequest(to=user_id, messages=[flex])
+                PushMessageRequest(
+                    to=user_id,
+                    messages=[
+                        TextMessage(text=f"為你找到 {len(data)} 間拉麵店，看看有沒有喜歡的："),
+                        flex,
+                    ],
+                )
             )
         elif intent == "GET_SPECIFIC_INFO" and len(data) == 1:
             rec = recommendations[0] if recommendations else None
             bubble = get_flex_bubble(data[0], rec)
+            shop_name = data[0].get("name") or "這間店"
             flex = FlexMessage(
                 alt_text=data[0].get("name", "店家資訊"),
                 contents=FlexContainer.from_dict(bubble),
             )
             check_and_increment("line_api")
             line_bot_api.push_message(
-                PushMessageRequest(to=user_id, messages=[flex])
+                PushMessageRequest(
+                    to=user_id,
+                    messages=[
+                        TextMessage(text=f"以下是「{shop_name}」的資訊："),
+                        flex,
+                    ],
+                )
             )
         else:
             items = []
@@ -385,7 +402,13 @@ def _reply_location(
         )
         check_and_increment("line_api")
         line_bot_api.push_message(
-            PushMessageRequest(to=user_id, messages=[flex])
+            PushMessageRequest(
+                to=user_id,
+                messages=[
+                    TextMessage(text=f"找到你附近 {len(results)} 間拉麵店："),
+                    flex,
+                ],
+            )
         )
         print(f"{GREEN}[TIMER] 位置訊息回覆完成，全程總耗時 {time.time() - _t_start:.1f}s{RESET}")
 
