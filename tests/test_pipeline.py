@@ -86,7 +86,7 @@ class TestDispatchSearchByCriteria:
         })
         monkeypatch.setattr(
             "core.agent_router.filter_ramen_data",
-            lambda intent_data, current_time=None: [_SAMPLE_SHOP],
+            lambda intent_data, current_time=None, user_id=None: [_SAMPLE_SHOP],
         )
         monkeypatch.setattr(
             "core.agent_router.generate_recommendations",
@@ -112,7 +112,7 @@ class TestDispatchSearchByCriteria:
         })
         monkeypatch.setattr(
             "core.agent_router.filter_ramen_data",
-            lambda intent_data, current_time=None: [],
+            lambda intent_data, current_time=None, user_id=None: [],
         )
         monkeypatch.setattr(
             "core.agent_router.generate_recommendations",
@@ -306,7 +306,9 @@ class TestDispatchNearMeWithoutLocation:
         called = []
         monkeypatch.setattr(
             "core.agent_router.filter_ramen_data",
-            lambda intent_data, current_time=None: called.append(intent_data),
+            lambda intent_data, current_time=None, user_id=None: (
+                called.append(intent_data)
+            ),
         )
 
         result = router.dispatch("推薦我附近的拉麵")
@@ -331,7 +333,7 @@ class TestDispatchNearMeWithoutLocation:
         })
         monkeypatch.setattr(
             "core.agent_router.filter_ramen_data",
-            lambda intent_data, current_time=None: [_SAMPLE_SHOP],
+            lambda intent_data, current_time=None, user_id=None: [_SAMPLE_SHOP],
         )
         monkeypatch.setattr(
             "core.agent_router.generate_recommendations",
@@ -366,7 +368,9 @@ class TestDispatchNoSearchConditions:
         called = []
         monkeypatch.setattr(
             "core.agent_router.filter_ramen_data",
-            lambda intent_data, current_time=None: called.append(intent_data),
+            lambda intent_data, current_time=None, user_id=None: (
+                called.append(intent_data)
+            ),
         )
 
         result = router.dispatch("我想吃拉麵")
@@ -392,7 +396,9 @@ class TestDispatchNoSearchConditions:
         called = []
         monkeypatch.setattr(
             "core.agent_router.filter_ramen_data",
-            lambda intent_data, current_time=None: called.append(intent_data),
+            lambda intent_data, current_time=None, user_id=None: (
+                called.append(intent_data)
+            ),
         )
 
         result = router.dispatch("有推薦的拉麵嗎")
@@ -413,7 +419,7 @@ class TestDispatchNoSearchConditions:
         })
         monkeypatch.setattr(
             "core.agent_router.filter_ramen_data",
-            lambda intent_data, current_time=None: [_SAMPLE_SHOP],
+            lambda intent_data, current_time=None, user_id=None: [_SAMPLE_SHOP],
         )
         monkeypatch.setattr(
             "core.agent_router.generate_recommendations",
@@ -542,7 +548,7 @@ class TestDispatchTransientRetry:
         ]
         monkeypatch.setattr(
             "core.agent_router.filter_ramen_data",
-            lambda intent_data, current_time=None: [_SAMPLE_SHOP],
+            lambda intent_data, current_time=None, user_id=None: [_SAMPLE_SHOP],
         )
         monkeypatch.setattr(
             "core.agent_router.generate_recommendations",

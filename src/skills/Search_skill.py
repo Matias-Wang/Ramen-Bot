@@ -18,6 +18,7 @@ from core.prompts import INFO_SUMMARY_PROMPT, RECOMMEND_PROMPT
 from services.google_maps import GoogleMapsService
 from core.usage_tracker import check_and_increment, record_tokens
 from core.llm_retry import generate_with_retry
+from core.recent_shops import exclude_recent, record_shown_shops
 from core import timing
 
 # <使用者自訂變數>
@@ -622,7 +623,9 @@ _OVERSEAS_PATTERN = re.compile(
 
 
 def filter_ramen_data(
-    intent_data: Dict[str, Any], current_time: Optional[str] = None
+    intent_data: Dict[str, Any],
+    current_time: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     核心篩選邏輯：根據 AI 解析出的意圖，從本地 JSON 篩選店家。
@@ -635,6 +638,9 @@ def filter_ramen_data(
     current_time : Optional[str]
         台北時間字串（格式 "%Y-%m-%d %H:%M"）。當 intent_data 的 open_now 為真時，
         用於過濾「當下正在營業」的店家；None 則不做營業時間過濾。
+    user_id : Optional[str]
+        LINE 使用者 ID。提供時會排除該使用者近期已被推薦過的店家，避免連續
+        查詢拿到同樣三間；None（本機測試、腳本呼叫）則不套用排除。
 
     Returns
     -------
@@ -686,7 +692,6 @@ def filter_ramen_data(
         else:
             print(f"{YELLOW}警告: 無法獲取 '{geocode_location}' 的經緯度（耗時 {_geo_elapsed:.1f}s），將使用字串模糊比對回退機制。{RESET}")
 
-    filtered_results = []
     # 預設搜尋半徑 (公里)；2km 確保結果貼近使用者指定地點。
     # 使用者若明確指定範圍（例如「方圓 5 公里」），intent 的 radius_km 覆寫預設值。
     SEARCH_RADIUS_KM = 2.0
@@ -695,77 +700,113 @@ def filter_ramen_data(
         SEARCH_RADIUS_KM = float(radius_km)
         print(f"{CYAN}[DEBUG] 使用者指定搜尋半徑：{SEARCH_RADIUS_KM}km{RESET}")
 
-    for _shop in all_shops:
-        # 已標記暫停營業的店家不應推薦給使用者
-        if "暫停營業" in (_shop.get("name") or ""):
-            continue
+    def _collect(coords: Optional[Dict[str, float]]) -> List[Dict[str, Any]]:
+        """
+        以指定的目標座標掃過全部店家並收集符合條件者。
 
-        # 使用者未指定地區時排除海外店家（詳見 _OVERSEAS_PATTERN 註解）
-        if not target_location and _OVERSEAS_PATTERN.search(
-            _shop.get("location") or ""
-        ):
-            continue
+        Parameters
+        ----------
+        coords : Optional[Dict[str, float]]
+            目標座標；None 表示不使用距離、改以 location 字串比對。
 
-        shop = copy.copy(_shop)  # 防止寫入 distance_km 汙染快取中的原始 dict
-        # 1. 口味比對 (Fuzzy Match)
-        shop_style = shop.get("style") or ""
-        match_style = not target_style or (target_style in shop_style)
+        Returns
+        -------
+        List[Dict[str, Any]]
+            符合口味、地區與營業時間條件的店家列表。
+        """
+        results: List[Dict[str, Any]] = []
+        for _shop in all_shops:
+            # 已標記暫停營業的店家不應推薦給使用者
+            if "暫停營業" in (_shop.get("name") or ""):
+                continue
 
-        if not match_style:
-            continue
+            # 使用者未指定地區時排除海外店家（詳見 _OVERSEAS_PATTERN 註解）
+            if not target_location and _OVERSEAS_PATTERN.search(
+                _shop.get("location") or ""
+            ):
+                continue
 
-        # 2. 地區/位置比對
-        match_location = False
-        if not target_location:
-            match_location = True
-        elif target_coords:
-            # 使用經緯度比對
-            shop_coords = shop.get("coordinates")
-            has_coords = (
-                shop_coords
-                and shop_coords.get("lat") is not None
-                and shop_coords.get("lng") is not None
-            )
-            if has_coords:
-                dist = calculate_distance(
-                    target_coords["lat"],
-                    target_coords["lng"],
-                    shop_coords["lat"],
-                    shop_coords["lng"],
+            shop = copy.copy(_shop)  # 防止寫入 distance_km 汙染快取中的原始 dict
+            # 1. 口味比對 (Fuzzy Match)
+            shop_style = shop.get("style") or ""
+            match_style = not target_style or (target_style in shop_style)
+
+            if not match_style:
+                continue
+
+            # 2. 地區/位置比對
+            match_location = False
+            if not target_location:
+                match_location = True
+            elif coords:
+                # 使用經緯度比對
+                shop_coords = shop.get("coordinates")
+                has_coords = (
+                    shop_coords
+                    and shop_coords.get("lat") is not None
+                    and shop_coords.get("lng") is not None
                 )
-                # 若在搜尋半徑內，則視為匹配
-                if dist <= SEARCH_RADIUS_KM:
-                    match_location = True
-                    shop["distance_km"] = round(dist, 2)
+                if has_coords:
+                    dist = calculate_distance(
+                        coords["lat"],
+                        coords["lng"],
+                        shop_coords["lat"],
+                        shop_coords["lng"],
+                    )
+                    # 若在搜尋半徑內，則視為匹配
+                    if dist <= SEARCH_RADIUS_KM:
+                        match_location = True
+                        shop["distance_km"] = round(dist, 2)
+                else:
+                    # 店家無座標資料，則回退至字串比對
+                    clean_target_loc = (
+                        target_location.replace("市", "")
+                        .replace("區", "")
+                        .replace("縣", "")
+                    )
+                    shop_loc = shop.get("location") or ""
+                    # shop_loc 為空字串時，"" in clean_target_loc 恆為 True，
+                    # 須先排除以避免缺少 location 欄位的店家誤配對任何地區查詢。
+                    if shop_loc and (
+                        clean_target_loc in shop_loc or shop_loc in clean_target_loc
+                    ):
+                        match_location = True
             else:
-                # 店家無座標資料，則回退至字串比對
-                clean_target_loc = target_location.replace("市", "").replace("區", "").replace("縣", "")
+                # 無目標座標資料，使用字串比對
+                clean_target_loc = (
+                    target_location.replace("市", "")
+                    .replace("區", "")
+                    .replace("縣", "")
+                )
                 shop_loc = shop.get("location") or ""
-                # shop_loc 為空字串時，"" in clean_target_loc 恆為 True，
-                # 須先排除以避免缺少 location 欄位的店家誤配對任何地區查詢。
                 if shop_loc and (
                     clean_target_loc in shop_loc or shop_loc in clean_target_loc
                 ):
                     match_location = True
-        else:
-            # 無目標座標資料，使用字串比對
-            clean_target_loc = target_location.replace("市", "").replace("區", "").replace("縣", "")
-            shop_loc = shop.get("location") or ""
-            if shop_loc and (
-                clean_target_loc in shop_loc or shop_loc in clean_target_loc
-            ):
-                match_location = True
 
-        if not match_location:
-            continue
-
-        # 3. 營業時間比對（僅「現在有開」查詢啟用）
-        # 無 opening_hours 資料的店家無法確認營業狀態，寧缺勿錯，一律排除。
-        if open_now and now_dt is not None:
-            if not is_open_at(shop.get("opening_hours"), now_dt):
+            if not match_location:
                 continue
 
-        filtered_results.append(shop)
+            # 3. 營業時間比對（僅「現在有開」查詢啟用）
+            # 無 opening_hours 資料的店家無法確認營業狀態，寧缺勿錯，一律排除。
+            if open_now and now_dt is not None:
+                if not is_open_at(shop.get("opening_hours"), now_dt):
+                    continue
+
+            results.append(shop)
+        return results
+
+    filtered_results = _collect(target_coords)
+
+    # 「南港」這類「是行政區名、但使用者沒帶『區』字」的查詢：Geocoding 回傳的是
+    # 行政區幾何中心，常離店家聚集處超過預設半徑（實測南港中心離唯一的南港店家
+    # 2.67km > 2km）而回 0 筆。與 bug#8（中山區）是同一失效模式，但既有的
+    # is_district_query 只認「區/市/縣」結尾，光禿禿的地名會漏掉。
+    # 座標查無結果時退回字串比對再試一次——比維護一份行政區名清單穩健，
+    # 且只在原本就要回空結果時才觸發，不影響任何已能正常回應的查詢。
+    if target_coords and not filtered_results:
+        print(f"{YELLOW}STEP: 座標半徑內查無店家，退回 location 字串比對重試{RESET}")
+        filtered_results = _collect(None)
 
     # 若有距離資訊，依距離排序
     has_distance = any("distance_km" in s for s in filtered_results)
@@ -774,6 +815,11 @@ def filter_ramen_data(
 
     # 去除同 place_id 的重複店家，避免同一家店在結果中出現兩次
     filtered_results = _dedupe_by_place_id(filtered_results)
+
+    # 排除該使用者近期已看過的店家，讓「還有其他的嗎？」真的換一批。
+    # 在抽選之前做，才能從剩餘候選中重新抽；排除後不足 3 間則自動放棄排除。
+    if user_id:
+        filtered_results = exclude_recent(user_id, filtered_results)
 
     if len(filtered_results) > 3:
         if has_distance:
@@ -791,6 +837,8 @@ def filter_ramen_data(
             filtered_results = random.sample(filtered_results, 3)
 
     print(f"{GREEN}STEP: 篩選完成，共找到 {len(filtered_results)} 間店家{RESET}")
+    if user_id:
+        record_shown_shops(user_id, filtered_results)
     return filtered_results
 
 

@@ -206,7 +206,12 @@ class AgentRouter:
             "message": message,
         }
 
-    def dispatch(self, user_text: str, current_time: str | None = None) -> dict:
+    def dispatch(
+        self,
+        user_text: str,
+        current_time: str | None = None,
+        user_id: str | None = None,
+    ) -> dict:
         """
         解析使用者輸入的意圖，並分發至對應技能執行。
 
@@ -217,6 +222,9 @@ class AgentRouter:
         current_time : str or None
             台北時間字串（例如 "2026-06-28 14:30"），作為背景資訊提供給 Gemini
             判斷「現在」、「今天」等相對時間用語；若為 None 則不注入時間背景。
+        user_id : str or None
+            LINE 使用者 ID，供 Search Skill 排除該使用者近期已推薦過的店家；
+            None（本機測試）則不套用排除。
 
         Returns
         -------
@@ -227,7 +235,7 @@ class AgentRouter:
         records = timing.begin_collection()
         _t0 = time.time()
         try:
-            result = self._dispatch_inner(user_text, current_time)
+            result = self._dispatch_inner(user_text, current_time, user_id)
         except Exception as e:
             print(f"{RED}DISPATCH CRITICAL ERROR: {e}{RESET}")
             result = self._fallback_result()
@@ -236,7 +244,12 @@ class AgentRouter:
         print(f"{CYAN}[KPI][dispatch] {timing.format_kpi(result['timing'])}{RESET}")
         return result
 
-    def _dispatch_inner(self, user_text: str, current_time: str | None = None) -> dict:
+    def _dispatch_inner(
+        self,
+        user_text: str,
+        current_time: str | None = None,
+        user_id: str | None = None,
+    ) -> dict:
         """dispatch 的核心邏輯，由頂層 try/except 包覆。"""
         _t0 = time.time()
 
@@ -336,7 +349,9 @@ class AgentRouter:
                     "error_description": intent_data.get("query") or user_text,
                 }]
             else:  # SEARCH_BY_CRITERIA
-                results = filter_ramen_data(intent_data, current_time=current_time)
+                results = filter_ramen_data(
+                    intent_data, current_time=current_time, user_id=user_id
+                )
         except Exception as e:
             print(f"{RED}STEP 2 ERROR:{e}{RESET}")
             results = []

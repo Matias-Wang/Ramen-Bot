@@ -138,6 +138,9 @@ _MOCK_GEOCODE_RESULTS = {
     "台北捷運公館站": {"lat": 25.0148, "lng": 121.5340},
     "台北市中山區": {"lat": 25.0633, "lng": 121.5258},
     "台北市大安區": {"lat": 25.0264, "lng": 121.5436},
+    # 「南港」這類未帶「區」字的行政區名，Geocoding 回傳的是行政區幾何中心，
+    # 常離店家聚集處超過 2km。此座標刻意設在遠處以重現該情境。
+    "台北市南港": {"lat": 25.0312, "lng": 121.6112},
 }
 
 
@@ -207,13 +210,24 @@ def _make_test_shops() -> list[dict]:
             "style": "豚骨",
             "coordinates": {"lat": 34.6937, "lng": 135.5023},
         },
+        {
+            "id": "shop_nangang",
+            "name": "南港拉麵",
+            "location": "台北市南港區",
+            "style": "醬油",
+            # 離「台北市南港」的 geocode 中心約 2.67km，超出 2km 預設半徑
+            "coordinates": {"lat": 25.0499, "lng": 121.5945},
+        },
     ]
 
 
 @pytest.fixture(autouse=True)
 def _mock_search_dependencies(monkeypatch):
     """以固定測試資料與模擬 Geocoding 取代 _load_all_shops / _get_latlng_cached，
-    避免讀取正式 ramen_data.json 或呼叫真實 Google Maps API。"""
+    避免讀取正式 ramen_data.json 或呼叫真實 Google Maps API。
+    同時清空 recent_shops 的模組層級狀態，避免測試間互相污染。"""
+    from core import recent_shops
+    recent_shops._recent.clear()
     monkeypatch.setattr(search_skill, "_load_all_shops", _make_test_shops)
     monkeypatch.setattr(
         search_skill,
@@ -308,6 +322,55 @@ class TestFilterRamenDataStyleAndCombined:
         for _ in range(30):  # 結果為隨機抽選，重複多次確保不是碰巧沒抽到
             result = filter_ramen_data({"style": "豚骨"})
             assert "shop_overseas" not in [s["id"] for s in result]
+
+    def test_bare_district_name_falls_back_to_string_match(self):
+        """「南港」這類未帶「區」字的行政區名，Geocoding 回傳行政區幾何中心，
+        離店家超過 2km 半徑而回 0 筆（實測正式資料 2.67km）。與 bug#8（中山區）
+        同一失效模式，但 is_district_query 只認「區/市/縣」結尾，光禿禿的地名會漏掉。
+        座標查無結果時應退回字串比對，而非直接回空。"""
+        result = filter_ramen_data({"location": "南港"})
+        assert "shop_nangang" in [s["id"] for s in result]
+
+    def test_district_suffix_query_still_works(self):
+        """對照組：帶「區」字時本來就走字串比對，行為不變。"""
+        result = filter_ramen_data({"location": "南港區"})
+        assert "shop_nangang" in [s["id"] for s in result]
+
+    def test_string_fallback_not_triggered_when_radius_has_results(self):
+        """半徑內有結果時不可觸發 fallback——否則會把遠處同名地區的店家一起帶進來。
+        中山站 2km 內有店，結果中不應出現大安區的店家。"""
+        result = filter_ramen_data({"location": "中山站"})
+        ids = [s["id"] for s in result]
+        assert "shop_zhongshan_tonkotsu" in ids
+        assert "shop_daan_tonkotsu" not in ids
+
+    def test_user_id_reaches_recent_shops_store(self):
+        """驗證 user_id 確實從 filter_ramen_data 一路傳到 recent_shops，
+        且推薦結果有被記錄下來——排除規則本身由 tests/test_recent_shops.py 覆蓋。
+        （此處不驗「第二次換一批」：測試資料每個地區的店家數不足以支撐排除，
+        硬灌資料只為讓測試通過並不誠實。）"""
+        from core.recent_shops import get_recent_shop_keys
+
+        result = filter_ramen_data({"location": "中山區"}, user_id="U_recent_1")
+        assert result
+        assert get_recent_shop_keys("U_recent_1") == {s["id"] for s in result}
+
+    def test_exclusion_skipped_when_too_few_candidates(self):
+        """候選不足 3 間時放棄排除——寧可重複，也不能因排除而少給結果。"""
+        first = filter_ramen_data({"location": "南港"}, user_id="U_recent_4")
+        second = filter_ramen_data({"location": "南港"}, user_id="U_recent_4")
+        assert [s["id"] for s in first] == ["shop_nangang"]
+        assert [s["id"] for s in second] == ["shop_nangang"]
+
+    def test_without_user_id_nothing_is_recorded(self):
+        """未傳 user_id（本機測試、離線腳本）時完全不碰 recent_shops。
+        （不可用「查兩次結果相同」當斷言——南港只有 1 間候選，
+        `keep_at_least=3` 必然放棄排除，那種斷言即使排除生效也會通過。）"""
+        from core import recent_shops
+
+        result = filter_ramen_data({"location": "南港"})
+        assert [s["id"] for s in result] == ["shop_nangang"]
+        assert recent_shops._recent == {}
 
     def test_overseas_shop_included_when_explicitly_queried(self):
         """明確查詢「大阪」時仍須查得到，排除機制不可誤傷。"""

@@ -746,3 +746,63 @@ commit `7d2bd43`，merge `d951dcd`，CI/CD run `33290802925` success。
 
 回退：`git revert -m 1 d951dcd && git push origin main`（CI 重新 build），
 或 `gcloud run services update-traffic ramen-bot --region=asia-east1 --to-revisions=ramen-bot-00079-2rz=100`（數秒生效）。
+
+
+## 2026-08-30（下午）— 修正「南港」查無結果與連續查詢重推同三間
+
+### 修正
+- **「南港」查無結果，根因不是資料缺口而是搜尋 bug**。原先被 `analyze_conversations.py`
+  盤為「資料盲區」，實際上 `ramen_data.json` 有 1 間南港店家（鐵丸十三堂）：
+  | 查詢 | 路徑 | 結果 |
+  |------|------|------|
+  | 南港區 | 行政區 → 字串比對 | ✅ 1 間 |
+  | 南港站 / 昆陽 | Geocoding → 2km | ✅ 1 間 |
+  | **南港** | Geocoding → 2km | ❌ **0 間** |
+
+  Geocoding 對光禿禿的行政區名回傳**行政區幾何中心**(25.0312, 121.6112)，
+  離店家 **2.67km**，超出 2km 預設半徑。與 search_skill BUG #8（中山區）同一失效模式，
+  但既有的 `is_district_query` 只認「區/市/縣」結尾，未帶「區」字的地名會漏掉。
+
+  修法：`filter_ramen_data` 的主迴圈抽為巢狀函式 `_collect(coords)`，
+  **座標查詢回 0 筆時退回字串比對再跑一次**。只在原本就要回空結果時觸發——
+  實測中山站／雙連站／西門／忠孝復興／民權西路／中山區／大安區／小巨蛋／東湖／西湖
+  十個既有查詢結果完全不變、皆未觸發 fallback。
+  > 考慮過但沒採用：維護一份行政區名清單。那是開放式清單，且台北以外的縣市會漏。
+
+### 新增
+- **避免連續查詢重推同三間**（2026-08-11 日誌「還有其他的台北拉麵嗎？」）。
+  新增 `src/core/recent_shops.py`，沿用 `core/message_dedup.py` 的 OrderedDict +
+  上限淘汰寫法；`user_id` 從 `app.py` → `dispatch()` → `filter_ramen_data()` 穿透三層。
+  在「去重之後、抽選之前」排除近期已看過的店家。
+  實測同使用者連查「台北」三次，相鄰兩次結果重疊 0 間。
+
+  **識別鍵用 `place_id` 而非 `id`**（Reviewer 發現）：`ramen_data.json` 是**以料理為單位**
+  而非以店家為單位，實測 33 組同 `place_id` 多筆變體、其中 11 組連座標都不同，
+  且 `_dedupe_by_place_id` 在不同查詢路徑下可能留下不同變體。用 `id` 當鍵會讓
+  同一家店以不同變體逃過排除。已對齊 `_dedupe_by_place_id`。
+
+  設計取捨（皆寫入模組 docstring）：
+  - **只做記憶體實作**，兩種 `DATA_BACKEND` 皆同。與訊息去重的需求不同——去重跨實例
+    失效會導致 Gemini 重複計費、必須正確；重複推薦失效的代價僅是看到相同結果。
+    生產 `maxScale=3` 跨實例讀不到屬可接受降級；改 Firestore 等於在搜尋熱路徑多一次
+    讀寫，與同檔案為省延遲而做的 stale-while-revalidate 自相矛盾。
+  - **只記最近一次、不累積**：累積會讓反覆查詢同一地區時可選店家越來越少。
+  - **TTL 30 分鐘**：否則使用者隔天查同一地區會莫名被排除。
+  - **排除後不足 3 間則放棄排除**：寧可重複，也不因排除而少給結果。
+  - ⚠️ 尚未涵蓋 GPS 定位推薦路徑（`filter_by_location`）。
+
+### 一併盤出（未修，已登錄 PENDING）
+🔴 **「台/臺」未正規化**：`filter_ramen_data({"location": "台北市"})` → **0 筆**，
+而 `臺北市` → 3 筆。因「市」結尾會短路 Geocoding 走字串比對，而店家 `location`
+存的是「臺北市…」。本次的座標 fallback 幫不上（根本沒走座標路徑）。屬既有問題，
+依「精準修改」原則另案處理。
+
+### 驗證
+`pytest` **192 passed**（前次 173，+19）／`e2e_test.py --full` 全部自動檢查通過／
+新增行 0 行超過 88 字元／獨立 Reviewer **PASSED**（`review/review_20260830_1205.md`），
+其 001（排除鍵）與 005（無效斷言）兩項建議已於 commit 前修正。
+
+> Reviewer 對 `_collect` 重構做了機械化等價比對（去縮排＋壓空白後逐行比對），
+> 而非目視——因為我在重構過程中踩過兩個坑：`s.index` 抓到 `filter_by_location`
+> 的同名迴圈而刪掉 `def filter_ramen_data`；以及 `results.append(shop)` 縮排錯誤
+> 被塞進 `if open_now` 區塊內（導致 15 個測試失敗）。兩次都由測試套件即時擋下。

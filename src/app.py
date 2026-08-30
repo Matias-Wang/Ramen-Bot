@@ -183,7 +183,9 @@ def _reply_to_line(
     result = None
     print(f"{CYAN}[TIMER] 開始處理訊息: {user_text!r}{RESET}")
     try:
-        result = router.dispatch(user_text, current_time=current_time)
+        result = router.dispatch(
+            user_text, current_time=current_time, user_id=user_id
+        )
         print(f"{CYAN}[TIMER] dispatch 完成，耗時 {time.time() - _t_start:.1f}s{RESET}")
 
         intent = result.get('intent')
