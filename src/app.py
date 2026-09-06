@@ -268,7 +268,9 @@ def _reply_to_line(
                 alt_text="拉麵推薦",
                 contents=FlexContainer.from_dict(carousel_contents),
             )
-            check_and_increment("line_api")
+            # LINE 的用量以「訊息則數」計算，此處一次送出引導文 + Flex 共 2 則，
+            # 故計數必須是 2；只計 1 會讓本地配額低於 LINE 實際計算的用量。
+            check_and_increment("line_api", 2)
             # 引導文與 Flex 併在同一次 push 送出：LINE 單次 push 最多可帶 5 則訊息，
             # 故不增加 push 次數，也不影響端到端 KPI。
             line_bot_api.push_message(
@@ -285,10 +287,13 @@ def _reply_to_line(
             bubble = get_flex_bubble(data[0], rec)
             shop_name = data[0].get("name") or "這間店"
             flex = FlexMessage(
-                alt_text=data[0].get("name", "店家資訊"),
+                # 用 `or` 而非 .get 的預設值：欄位存在但值為 None 時預設值不生效，
+                # FlexMessage 會驗證失敗使整則回覆失敗（改推「系統忙碌中」）。
+                # 與上方 shop_name 同一種寫法。
+                alt_text=data[0].get("name") or "店家資訊",
                 contents=FlexContainer.from_dict(bubble),
             )
-            check_and_increment("line_api")
+            check_and_increment("line_api", 2)  # 引導文 + Flex 共 2 則
             line_bot_api.push_message(
                 PushMessageRequest(
                     to=user_id,
@@ -372,7 +377,7 @@ def _reply_location(
     records = timing.begin_collection()
     print(f"{CYAN}[TIMER] 開始處理位置訊息: ({lat}, {lng}){RESET}")
     try:
-        results, nearest_km = filter_by_location(lat, lng)
+        results, nearest_km = filter_by_location(lat, lng, user_id=user_id)
 
         # 半徑內找不到：明白告知搜尋範圍與最近一間距離
         if not results:
@@ -402,7 +407,7 @@ def _reply_location(
             alt_text="附近的拉麵推薦",
             contents=FlexContainer.from_dict(carousel_contents),
         )
-        check_and_increment("line_api")
+        check_and_increment("line_api", 2)  # 引導文 + Flex 共 2 則
         line_bot_api.push_message(
             PushMessageRequest(
                 to=user_id,

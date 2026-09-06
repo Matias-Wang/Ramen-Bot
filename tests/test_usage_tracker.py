@@ -96,6 +96,34 @@ class TestCheckAndIncrement:
         for key in ("google_maps_api", "llm_gemini", "line_api"):
             assert usage_tracker.check_and_increment(key) is True
 
+    def test_count_parameter_increments_by_that_amount(self, redirect_log_path):
+        """LINE 的用量以訊息則數計算，單次 push 可帶多則（引導文 + Flex），
+        只計 1 會讓本地配額低於 LINE 實際計算的用量。"""
+        usage_tracker.check_and_increment("line_api", 2)
+        data = json.loads(redirect_log_path.read_text(encoding="utf-8"))
+        assert data["line_api"]["count"] == 2
+
+    def test_count_defaults_to_one(self, redirect_log_path):
+        usage_tracker.check_and_increment("line_api")
+        data = json.loads(redirect_log_path.read_text(encoding="utf-8"))
+        assert data["line_api"]["count"] == 1
+
+    def test_rejects_when_count_would_exceed_limit(self, redirect_log_path):
+        """剩餘額度不足以容納 count 時應拒絕，而不是先超出再說。"""
+        # 先寫一次讓檔案生成，才讀得到 limit
+        assert usage_tracker.check_and_increment("line_api") is True
+        limit = json.loads(
+            redirect_log_path.read_text(encoding="utf-8")
+        )["line_api"]["limit"]
+        for _ in range(limit - 2):
+            assert usage_tracker.check_and_increment("line_api") is True
+        # 只剩 1 額度，要求 2 則應被拒絕且不改變計數
+        assert usage_tracker.check_and_increment("line_api", 2) is False
+        data = json.loads(redirect_log_path.read_text(encoding="utf-8"))
+        assert data["line_api"]["count"] == limit - 1
+        # 但仍容得下 1 則
+        assert usage_tracker.check_and_increment("line_api") is True
+
 
 # ─── record_tokens ─────────────────────────────────────────────────────────────
 
