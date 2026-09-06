@@ -510,6 +510,8 @@ protobuf 反序列化）連帶慢 30~400 倍，TLS 交握甚至被凍到對端�
 CPU 常駐改以實例生命週期計費，`min-instances=1`、1 vCPU / 1GiB 常駐，粗估每月增加
 約 US$40~50。已向使用者澄清 Google Maps Platform 的每月 US$200 抵免額為 Maps SKU
 專款專用、不可支付 Cloud Run / Firestore，使用者確認額度充足後同意採行。
+> **後續（2026-09-02）**：此常駐成本已於 2026-09-02 藉由 `min-instances` 1 → 0 解除，
+> `--no-cpu-throttling` 保留不動。詳見本檔 2026-09-02 條目。
 
 > 註：2026-07-09 ~ 2026-07-30 期間的項目已於上一段補寫；其中 AI 摘要快取、效能計時 KPI、
 > 高風險漏洞修補 H1~H4 的逐項細節記於 `PENDING.md`。
@@ -900,4 +902,179 @@ commit `96a8de0`，merge `7d12bf3`，CI/CD success。
 ```
 git revert -m 1 7d12bf3 && git push origin main      # 單獨回退本次
 gcloud run services update-traffic ramen-bot   --region=asia-east1 --to-revisions=ramen-bot-00083-qz9=100
+```
+
+---
+
+## 2026-09-02 — Cloud Run 帳單暴增歸因與 `min-instances` 降為 0
+
+### 背景
+使用者反映上個月 Cloud Run 帳單突破 NT$1,000。追查後確認**非異常、非盜用**，
+而是 2026-08-01「CPU 常駐配置」改動的預期代價——當時已估算 US$40~50/月並取得同意
+（見本檔 2026-08-01「成本影響」）。
+
+### 根因
+成本來自兩個設定的**組合**：
+- `min-instances=1`（自 2026-05-22 revision 00001 即存在）→ 實例 24 小時不被回收
+- `--no-cpu-throttling`（2026-08-01 加入）→ 計費由「請求處理期間」改為**整個實例生命週期**
+
+兩者相乘 = 1 vCPU / 1GiB 全月 730 小時全額計費，**與流量完全無關**。
+佐證：request log（保留期 30 天，涵蓋 08-06~08-30）僅 91 筆，其中使用者訊息
+（POST `/callback`）46 筆、LINE 回抓圖片 45 筆，24 天內僅 9 天有活動。
+帳單幾乎 100% 為閒置常駐費。
+
+### 修改
+- Cloud Run service `ramen-bot`：`min-instances` **1 → 0**
+  （`gcloud run services update`，未經 CI、未重建映像）
+- **`--no-cpu-throttling` 保留不動**：移除等同把 2026-08-01 修掉的延遲根因放回來。
+  真正造成閒置計費的是常駐實例讓 CPU 空轉，故只動 `min-instances`
+
+### 驗證
+revision **`ramen-bot-00085-cgj` → `ramen-bot-00086-c7j`**，100% 流量已切換。
+沿用同一映像 `sha256:97c15b0b…`（= main HEAD `16b6928`），**程式碼零變動**。
+`cpu-throttling=false`、`startup-cpu-boost=true`、`maxScale=3`、1 vCPU/1Gi 全數保留。
+煙霧測試 `GET /` 回 HTTP 404（Flask 已啟動）0.07s。
+預期成本：實例存活時間由 730 小時/月降至約 7.5 小時/月，落入免費額度（量級估算）。
+
+### 已知取捨與新增風險
+- **冷啟動 43%**：依 08-06~08-30 真實請求間隔推算，46 則訊息中約 20 則會踩到冷啟動。
+  保溫窗 5 分鐘與 30 分鐘只差 5 次——請求間隔不在分鐘尺度，故調整保溫時間無意義。
+  真實使用者分散各時段、各自獨立冷啟，比例只會更高
+- **背景執行緒與實例回收的競態（低機率、新增）**：webhook 已回 200、背景 daemon thread
+  仍在跑 LLM 的窗口內，Cloud Run 視該實例為無活躍請求。實務上回收需十餘分鐘、
+  且有 SIGTERM 寬限期，7 秒工作幾乎必然完成，但風險由「不可能」變為「機率很低」
+
+### 評估後不做：Cloud Tasks 根本解
+將工作 enqueue 至 Cloud Tasks、由其回打 `/process`，使 pipeline 在正式請求內執行，
+即可移除 `--no-cpu-throttling`。**評估後決定不做**：`min-instances=0` 之後，
+兩方案每月差距小於 US$1，成本理由已消失。重啟觸發條件：(1) 流量成長至約 30 session/天
+以上（閒置尾巴開始累積成本），(2) 上述競態實際發生。
+完整評估（含延遲影響、冪等性、觸發條件推算）見 `review/review_20260902_0801.md` 第五節。
+
+### 回退
+```
+gcloud run services update ramen-bot --region=asia-east1 --min-instances=1
+gcloud run services update-traffic ramen-bot   --region=asia-east1 --to-revisions=ramen-bot-00085-cgj=100
+```
+
+---
+
+## 2026-09-03 — 外洩憑證輪替完成、實機驗證與冷啟動實測
+
+### 背景
+2026-09-02 於 Cloud Run 帳單調查中發現：repo 為 PUBLIC，初始 commit `79d8645`
+（2026-03-07）含 `.env`，同日 `4a48b70` 刪除但**刪檔不清歷史**，四個機密外洩約六個月。
+根因為當時的 ignore 檔名拼成 `.gitnore`（少一個 `i`），規則從未生效，
+`git add .` 遂將 `.env` 一併收入。使用者當日 11:13 commit、12:41 刪檔、13:00 改正檔名，
+處置正確，唯一未涵蓋的是「刪檔不會從既有 commit 移除 blob」。
+
+### 修改
+- **`GOOGLE_MAPS_API_KEY`**（2026-09-02）：新建限制相同的 key、Secret Manager 版本 4、
+  revision `ramen-bot-00087-2q6`，刪除舊 key。
+- **`LINE_CHANNEL_ACCESS_TOKEN` / `LINE_CHANNEL_SECRET`**（2026-09-03 00:30）：
+  使用者於 LINE Developers Console 重新發行，Secret Manager 版本 4，
+  revision **`ramen-bot-00088-c2k`**。
+- **`GEMINI_API_KEY`**：先前即已輪替，本次補驗舊值失效。
+- **新增 `scripts/check_secrets.py`**：commit 前機密掃描，由 `.git/hooks/pre-commit`
+  最前面呼叫。檔名守門（任何 `.env` 進 staged 即擋）＋內容守門（僅掃新增行）。
+  ⚠️ `scripts/` 與 `.git/hooks/` 皆不納入版控，此防線僅存在於本機。
+
+### 驗證
+- 四把舊憑證全部以實際 API 呼叫確認失效（Maps 回 `REQUEST_DENIED / API key is expired`、
+  Gemini 回 `400 API key not valid`）。
+- channel secret 以無副作用方式實測：對 `/callback` 送 `events: []` 空 webhook，
+  新 secret 簽名回 200、故意錯誤 secret 回 400（排除「未驗簽而照單全收」的偽陽性）。
+- **實機**：07:58 `食券機怎麼用`、07:59 `北車推薦的拉麵有什麼`，兩則皆成功收到回覆。
+- GitHub secret scanning alert #1 / #2（建立於 2026-03-07、掛了六個月）已標記 revoked。
+
+### 冷啟動實測（`min-instances=0` 後首次取得真實數據）
+4 個樣本：7.17s / 12.33s / 6.42s（webhook 段）/ **13.87s**（含 LLM 完整體感）。
+裸冷啟動 **6.4~12.3 秒**，非穩定值。拆解：模組 import 8.63s、連線預熱 2.96s，
+**大頭是 import**，故預熱改背景最多省約 3 秒，不值得動架構。
+15 分鐘閒置回收經日誌證實（實例啟動至 SIGTERM 相隔 15 分 14 秒）。
+LINE 未因 webhook 花 6.42 秒回 200 而重送。
+
+**決策：維持 `min-instances=0`**。冷啟動加固定約 6.4 秒——知識問答 7.4s→13.9s
+（實測使用者未察覺）、快取命中搜尋 2.15s→約 8.5s（明顯）。
+在完整揭露取捨後由使用者拍板。
+
+### 已知問題（待修）
+`[KPI][webhook]` **系統性低報冷啟動延遲 47%**（實測 13.87s 只報 7.34s）。
+`src/app.py:458` 的 `received_at = time.time()` 位於 `handle_message` 第一行，
+而該函式只在容器啟動、模組載入完畢後才執行。`min-instances=1` 時無此盲點。
+修法：改用已傳入的 `event.timestamp` 為起點。詳見 `PENDING.md`。
+
+### 回退
+```
+gcloud run services update ramen-bot --region=asia-east1 --min-instances=1
+```
+> 憑證輪替不可回退（舊值已作廢且本就外洩）。
+
+---
+
+## 2026-09-06 — KPI 計時起點改用 LINE 收訊時戳，涵蓋冷啟動
+
+### 背景
+`min-instances` 由 1 改為 0（2026-09-02，成本考量）之後，`[KPI][webhook]` 端到端數字
+**系統性低報 47%**。2026-09-03 實機證據：
+
+```
+23:58:07.470  LINE webhook 抵達
+23:58:07.485  Cloud Run 啟動新實例          ← KPI 未涵蓋
+23:58:13.99   handle_message 開始執行        ← KPI 由此起算（7.34s）
+23:58:21.34   回覆送出
+              實際 13.87s，KPI 只報 7.34s
+```
+
+根因：`received_at = time.time()` 是 `handle_message` 的第一行，而該函式只有在容器
+啟動、模組載入完畢之後才會執行，故冷啟動的 6~12 秒完全落在 KPI 之外。
+`min-instances=1` 時實例恆為熱，此盲點不存在。
+
+### 新增
+- `core/timing.py` 的 `webhook_received_at(event_timestamp_ms, now=None)`：
+  以 LINE 的 `event.timestamp` 為 KPI 起點。含時戳防呆——落差不在
+  `0 ~ MAX_WEBHOOK_LAG_S`（300s）之間時退回 `time.time()`，避免時鐘偏移或
+  LINE 重送舊訊息造成 KPI 為負值或離譜數值。
+- `tests/test_timing.py`：7 個測試（正常落差、冷啟動情境、零落差、上限邊界、
+  超出上限、時鐘倒退、預設 `now`）。
+- `scripts/check_secrets.py` 納入版控（見下方「修改」）。
+
+### 修改
+- `src/app.py`：`handle_message` / `handle_location` 兩個 webhook 進入點改用
+  `timing.webhook_received_at(event.timestamp)`。
+- `.github/workflows/deploy.yml`：明寫 `--min-instances=0` 並比照
+  `--no-cpu-throttling` 加上理由註解。原本依賴 `gcloud run deploy` 未指定時
+  沿用服務現有設定——不會被改回去，但意圖是隱含的。
+- `.gitignore`：`scripts/` → `scripts/*` + `!scripts/check_secrets.py`。
+  **原寫法無法用 `!` 放行**——git 不會進入被排除的目錄，必須先改成 `scripts/*`
+  例外才生效。已驗證僅 `check_secrets.py` 放行，其餘腳本仍忽略。
+
+### 設計取捨
+純邏輯刻意放在 `core/timing.py` 而非 `src/app.py`：後者在模組層級即建立 LINE client
+並執行五段連線預熱，**測試無法直接 import**（`tests/` 至今無任何檔案 import linebot，
+此事於 2026-08-28 LINE SDK v3 遷移時已被記錄為驗證盲區）。抽出後才能被測試涵蓋。
+
+### 驗證
+- 基準線（clean `origin/main`）212 passed → 改動後 **219 passed, 10 skipped**（+7）
+- pre-commit 三關全過：機密掃描 → pytest → `e2e_test.py` 四情境「全部自動檢查通過」
+- 新增行 0 行超過 88 字元；`time` 模組仍有 12 處使用，無孤兒 import
+- 改動於自 `origin/main` 開出的獨立 worktree 進行，未觸碰使用者工作區中
+  `chore/tech-debt-cleanup` 的未提交改動
+
+> 過程紀錄：pre-commit 曾因 worktree 缺少被 gitignore 的 `scripts/e2e_test.py` 而擋下
+> commit。**未使用 `--no-verify` 繞過**，改為補齊 worktree 缺少的 gitignored 資產後
+> 重跑，使三道關卡真正執行完畢。
+
+### 上線
+commit `ee0107a`，merge `02642a4`（PR #21），CI/CD success。
+正式環境 revision **`ramen-bot-00088-c2k` → `ramen-bot-00089-49q`**，100% 流量。
+部署後確認 `minScale` 仍為 0、`cpu-throttling=false`、`startup-cpu-boost=true` 皆未遺失。
+
+### 待驗證
+下一則**冷啟動**的實機訊息，其 `[KPI][webhook]` 應顯著大於先前報數
+（先前冷啟動只報 7.34s，修正後應接近 13~14s 量級）。
+
+### 回退
+```
+git revert -m 1 02642a4 && git push origin main
 ```
