@@ -533,6 +533,7 @@ def filter_by_location(
     lng: float,
     radius_km: float = 5.0,
     style: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> tuple[List[Dict[str, Any]], Optional[float]]:
     """
     以使用者分享的精確座標（LINE 位置訊息）為中心，找出最近的拉麵店。
@@ -551,6 +552,9 @@ def filter_by_location(
         搜尋半徑（公里），預設 5km。
     style : Optional[str]
         口味關鍵字，None 或空字串表示不限口味。
+    user_id : Optional[str]
+        LINE 使用者 ID。提供時會排除該使用者近期已被推薦過的店家，讓重複分享
+        位置時能拿到不同店家；None（本機測試、腳本呼叫）則不套用排除。
 
     Returns
     -------
@@ -599,9 +603,20 @@ def filter_by_location(
 
     within_radius.sort(key=lambda x: x.get("distance_km", 999))
     within_radius = _dedupe_by_place_id(within_radius)
+
+    # 排除近期已推薦過的店家，讓使用者重複分享位置時能拿到不同店家。
+    # 在取前 3 間之前做，才能從剩餘候選中重新取最近的幾間；排除後不足 3 間
+    # 則自動放棄排除（半徑內店家本來就少時，寧可重複也不要少給）。
+    if user_id:
+        within_radius = exclude_recent(user_id, within_radius)
+
     results = within_radius[:3]
 
-    print(f"{GREEN}STEP: 定位推薦完成，半徑內 {len(within_radius)} 間，回傳 {len(results)} 間{RESET}")
+    # within_radius 在上方可能已被 exclude_recent 覆寫，故此處不可再稱「半徑內」
+    print(f"{GREEN}STEP: 定位推薦完成，候選 {len(within_radius)} 間，"
+          f"回傳 {len(results)} 間{RESET}")
+    if user_id:
+        record_shown_shops(user_id, results)
     return results, nearest_km
 
 

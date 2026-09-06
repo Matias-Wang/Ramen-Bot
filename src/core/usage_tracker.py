@@ -78,7 +78,7 @@ def _reset_if_new_day(data: dict) -> dict:
     return data
 
 
-def _local_check_and_increment(key: str) -> "bool | None":
+def _local_check_and_increment(key: str, count: int = 1) -> "bool | None":
     """本地模式：在 _LOCAL_LOCK 內完成 read-modify-write，避免並行漏加。
 
     Returns
@@ -91,14 +91,14 @@ def _local_check_and_increment(key: str) -> "bool | None":
         entry = data.get(key)
         if entry is None:
             return None
-        if entry["count"] >= entry["limit"]:
+        if entry["count"] + count > entry["limit"]:
             return False
-        entry["count"] += 1
+        entry["count"] += count
         _save(data)
         return True
 
 
-def _firestore_check_and_increment(key: str) -> "bool | None":
+def _firestore_check_and_increment(key: str, count: int = 1) -> "bool | None":
     """Firestore 模式：以 transaction 原子完成讀-判斷-加，避免多副本並行漏加。
 
     Returns
@@ -120,20 +120,20 @@ def _firestore_check_and_increment(key: str) -> "bool | None":
         entry = data.get(key)
         if entry is None:
             return None
-        if entry["count"] >= entry["limit"]:
+        if entry["count"] + count > entry["limit"]:
             # 跨日會由 _reset_if_new_day 歸零而不進本分支，故此處必為同日已達上限、
             # data 未變動，無需寫回（避免尖峰時的冗餘寫入）。
             return False
-        entry["count"] += 1
+        entry["count"] += count
         transaction.set(doc_ref, data)
         return True
 
     return _txn(db.transaction())
 
 
-def check_and_increment(key: str) -> bool:
+def check_and_increment(key: str, count: int = 1) -> bool:
     """
-    檢查指定 API 是否仍在每日配額內，若是則計數 +1 並寫回。
+    檢查指定 API 是否仍在每日配額內，若是則計數加上 count 並寫回。
 
     本地模式以 threading.Lock、Firestore 模式以 transaction 保證整段
     「讀-判斷-加」原子性，避免多執行緒/多副本並行下漏加計數而突破每日上限。
@@ -142,11 +142,15 @@ def check_and_increment(key: str) -> bool:
     ----------
     key : str
         追蹤鍵值，可為 "google_maps_api"、"llm_gemini"、"line_api"。
+    count : int
+        本次要計入的數量，預設 1。LINE 的用量以**訊息則數**計算，
+        而單次 `push_message` 可帶多則訊息（例如引導文 + Flex 共 2 則），
+        此時須傳入實際則數，否則計數會低於 LINE 實際計算的用量。
 
     Returns
     -------
     bool
-        True 表示可繼續執行；False 表示已達當日上限。
+        True 表示可繼續執行；False 表示加上 count 後會超出當日上限。
     """
     if os.getenv("E2E_TEST_MODE") == "1":
         print(f"{YELLOW}STEP: E2E_TEST_MODE 啟用，{key} 配額檢查略過（不計入每日配額）{RESET}")
@@ -156,9 +160,9 @@ def check_and_increment(key: str) -> bool:
     _t0 = time.time()
     try:
         if USE_FIRESTORE:
-            result = _firestore_check_and_increment(key)
+            result = _firestore_check_and_increment(key, count)
         else:
-            result = _local_check_and_increment(key)
+            result = _local_check_and_increment(key, count)
 
         if result is None:
             print(f"{RED}STEP ERROR: 未知的追蹤鍵值 '{key}'{RESET}")

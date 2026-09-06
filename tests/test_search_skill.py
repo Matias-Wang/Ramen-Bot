@@ -573,6 +573,37 @@ class TestFilterByLocation:
         ids = [s["id"] for s in results]
         assert "shop_closed" not in ids
 
+    def test_recent_shops_excluded_for_same_user(self):
+        """使用者重複分享位置時應拿到不同店家（半徑內候選足夠的前提下）。"""
+        first, _ = filter_by_location(
+            *_ZHONGSHAN_CENTER, radius_km=50.0, user_id="U_geo_1"
+        )
+        second, _ = filter_by_location(
+            *_ZHONGSHAN_CENTER, radius_km=50.0, user_id="U_geo_1"
+        )
+        first_ids = {s["id"] for s in first}
+        second_ids = {s["id"] for s in second}
+        assert first_ids and second_ids
+        assert not (first_ids & second_ids)
+
+    def test_without_user_id_nothing_is_recorded(self):
+        """未傳 user_id（本機測試、腳本）時完全不碰 recent_shops。"""
+        from core import recent_shops
+
+        filter_by_location(*_ZHONGSHAN_CENTER, radius_km=50.0)
+        assert recent_shops._recent == {}
+
+    def test_exclusion_skipped_when_too_few_in_radius(self):
+        """半徑內候選不足 3 間時放棄排除——寧可重複，也不因排除而少給結果。"""
+        first, _ = filter_by_location(
+            *_ZHONGSHAN_CENTER, radius_km=2.0, user_id="U_geo_2"
+        )
+        second, _ = filter_by_location(
+            *_ZHONGSHAN_CENTER, radius_km=2.0, user_id="U_geo_2"
+        )
+        assert first and second
+        assert {s["id"] for s in first} == {s["id"] for s in second}
+
     def test_style_filter_applied(self):
         results, _ = filter_by_location(*_ZHONGSHAN_CENTER, radius_km=2.0, style="味噌")
         ids = [s["id"] for s in results]

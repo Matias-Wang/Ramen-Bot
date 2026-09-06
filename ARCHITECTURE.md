@@ -128,7 +128,7 @@
   呼叫 API），插在 Bubble 分隔線之前。支援多時段（`11:00-14:00、17:00-22:00`）、
   跨午夜、24 小時營業與今日公休。**只呈現時段本身，不判斷當下是否營業中**——
   「是否營業中」由 Search Skill 的 `open_now` 過濾負責，兩者職責分離
-- **定位推薦（LocationMessage 專用）**：`filter_by_location(lat, lng, radius_km=5.0, style)`
+- **定位推薦（LocationMessage 專用）**：`filter_by_location(lat, lng, radius_km=5.0, style, user_id)`
   不經 Geocoding、不隨機抽選，直接對店家快取跑 Haversine，依距離排序取最近 ≤3 間；
   回傳 `(results, nearest_km)`，`nearest_km` 供半徑內找不到時回覆使用者最近一間的距離
 
@@ -253,7 +253,7 @@ AgentRouter 解析完意圖後埋點：
   |---|---|---|
   | `google_maps_api` | Geocoding + Places Text Search + Places Photo（三者加總）| 100 次 |
   | `llm_gemini` | 意圖解析 + 推薦文生成（所有 Gemini 呼叫加總）| 100 次 |
-  | `line_api` | reply_message 發送次數 | 100 次 |
+  | `line_api` | push_message 送出的**訊息則數**（非 push 次數——單次 push 可帶多則） | 100 則 |
 
   **運作邏輯：**
   1. 讀取 `log/usage.json`，比對 `date` 欄位。
@@ -264,7 +264,8 @@ AgentRouter 解析完意圖後埋點：
 
   **相關檔案：**
   - `log/usage.json`：每日用量資料，可直接開啟查看。
-  - `usage_tracker.py`：提供 `check_and_increment(key)` 與 `record_tokens(tokens)` 兩支函式。
+  - `usage_tracker.py`：提供 `check_and_increment(key, count=1)` 與 `record_tokens(tokens)` 兩支函式。
+    `count` 用於單次送出多則訊息的情境（引導文 + Flex 共 2 則），預設 1。
 
 ### 店家照片的時效處理 (Photo URL Lifecycle)
 Google Places Media 端點回傳的 `photoUri` 是**有時效的簽章網址**：過期後仍是合法的
