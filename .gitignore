@@ -13,7 +13,10 @@ AGENTS.md
 error.log/
 log/
 .pytest_cache/
-scripts/
+scripts/*
+# 機密掃描腳本納入版控：它是 2026-03-07 .env 外洩的防再犯措施，
+# 若隨 scripts/ 一起被忽略，換機器或重新 clone 後這道防線就不存在。
+!scripts/check_secrets.py
 development_history/
 docs/
 temp.json

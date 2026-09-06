@@ -65,10 +65,16 @@ jobs:
       # 配置 CPU，請求結束後 CPU 被壓到近乎 0，導致背景執行緒中的所有工作
       # 慢 30~400 倍（實測同一段 Firestore 讀取：有請求在飛時 0.3s，背景執行
       # 緒中 133.6s），甚至 TLS 交握被凍到對方斷線（SSL UNEXPECTED_EOF）。
+      # --min-instances=0：不保留常駐實例。與 --no-cpu-throttling 併用時，
+      # min-instances=1 會讓 1 vCPU/1GiB 全月 730 小時全額計費、與流量完全無關
+      # （2026-08 帳單即因此暴增）。改為 0 後實例存活時間降至約 7.5 小時/月。
+      # 代價：約 43% 的訊息會踩到冷啟動（實測裸冷啟動 6~12 秒）。
+      # 未指定時 gcloud run deploy 會沿用服務現有設定，此處明寫以固定意圖。
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE }} \
             --image ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ github.sha }} \
             --region ${{ env.REGION }} \
             --no-cpu-throttling \
+            --min-instances=0 \
             --quiet
