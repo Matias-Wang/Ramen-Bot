@@ -23,6 +23,46 @@ _Records = List[Tuple[str, float]]
 _records: ContextVar[Optional[_Records]] = ContextVar("_timing_records", default=None)
 
 
+# webhook 時戳與本機時鐘的最大合理落差（秒）。超出即視為時鐘偏移或 LINE
+# 重送舊訊息，退回本機時間，避免 KPI 出現負值或離譜數值。
+MAX_WEBHOOK_LAG_S = 300
+
+
+def webhook_received_at(
+    event_timestamp_ms: int, now: "Optional[float]" = None
+) -> float:
+    """
+    換算 KPI 計時起點：LINE 伺服器收到該則訊息的時刻。
+
+    須改用 LINE 的 `event.timestamp` 而非 webhook handler 內的 `time.time()`：
+    後者在 `handle_message` 第一行取值，而該函式只有在容器啟動、模組載入完畢
+    之後才會執行。`min-instances=0` 時冷啟動實測達 6~12 秒，這段完全不會被計入
+    KPI（2026-09-03 實測：端到端 13.87s 只報 7.34s，低報 47%）。
+
+    Parameters
+    ----------
+    event_timestamp_ms : int
+        LINE webhook 事件的 `timestamp`，毫秒級 epoch。
+    now : Optional[float]
+        當前時間（epoch 秒）；None 時取 `time.time()`。供測試注入。
+
+    Returns
+    -------
+    float
+        KPI 計時起點（epoch 秒）。落差不在 0 ~ MAX_WEBHOOK_LAG_S 之間時退回 `now`。
+    """
+    current = time.time() if now is None else now
+    received_at = event_timestamp_ms / 1000
+    lag = current - received_at
+    if not 0 <= lag <= MAX_WEBHOOK_LAG_S:
+        print(
+            f"{CYAN}STEP: webhook 時戳異常（與本機差 {lag:.1f}s），"
+            f"KPI 改以本機時間起算{RESET}"
+        )
+        return current
+    return received_at
+
+
 def begin_collection() -> _Records:
     """
     開啟一次新的計時收集，並設為當前 context 的收集器。

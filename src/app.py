@@ -450,7 +450,9 @@ def handle_message(event: MessageEvent) -> None:
     僅處理一對一私聊（source.type == "user"），群組/多人聊天室訊息直接忽略；
     並以 message.id 去重，避免 LINE webhook 重送觸發重複的 Gemini 呼叫。
     """
-    received_at = time.time()
+    # 以 LINE 收訊時戳為 KPI 起點，讓 min-instances=0 的冷啟動
+    # （容器啟動 + 模組載入，實測 6~12s）也被計入端到端數字。
+    received_at = timing.webhook_received_at(event.timestamp)
     if event.source.type != "user":
         print(f"{YELLOW}STEP: 來源非一對一私聊（{event.source.type}），忽略此訊息{RESET}")
         return
@@ -478,7 +480,9 @@ def handle_location(event: MessageEvent) -> None:
 
     沿用 handle_message 的兩道防護：僅處理一對一私聊、並以 message.id 去重。
     """
-    received_at = time.time()
+    # 以 LINE 收訊時戳為 KPI 起點，讓 min-instances=0 的冷啟動
+    # （容器啟動 + 模組載入，實測 6~12s）也被計入端到端數字。
+    received_at = timing.webhook_received_at(event.timestamp)
     if event.source.type != "user":
         print(f"{YELLOW}STEP: 來源非一對一私聊（{event.source.type}），忽略此位置訊息{RESET}")
         return
