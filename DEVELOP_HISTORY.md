@@ -1078,3 +1078,70 @@ commit `ee0107a`，merge `02642a4`（PR #21），CI/CD success。
 ```
 git revert -m 1 02642a4 && git push origin main
 ```
+
+## 2026-09-06（晚間）— 修正 line_api 計數低估、GPS 路徑未排除近期推薦，建立 app.py 測試覆蓋
+
+### 背景
+`chore/tech-debt-cleanup` 分支自 2026-08-30 起擱置一週，期間 main 已合併 PR #21、#22。
+恢復作業前須先做環境同步：`src/app.py` 兩邊皆有改動（使用者的在 268~410 行、
+PR #21 的在 450+ 行），**不可用覆蓋方式處理**，改以完整備份（含 sha256）→ `git stash`
+→ `merge --ff-only` → `stash pop` 三方合併完成，無衝突。
+
+### 修改
+- **`line_api` 每日計數低估約一半**：`usage_tracker.check_and_increment(key, count=1)`
+  新增數量參數，額度判斷由 `count >= limit` 改為 `count + n > limit`
+  （`count=1` 時與原式逐值等價）。`app.py` 三處帶 2 則訊息的 push 傳 2，其餘 8 處維持 1。
+  - 既有設計未變（非本次引入）：`app.py` 從不檢查回傳值，達上限後訊息仍會送出、
+    計數凍結在上限值。本次只讓凍結點提早一格。
+- **GPS 定位推薦未套用避免重複推薦**：`filter_by_location()` 新增 `user_id`，
+  於取前 3 間**之前**呼叫 `exclude_recent`，回覆後 `record_shown_shops`。
+  關閉了「GPS 推薦完再用文字追問」的跨路徑破口。
+- **`alt_text` 的 `dict.get` 預設值失效**：`data[0].get("name", "店家資訊")` 在 key
+  存在但值為空字串時不會套用預設值，改用與相鄰 `shop_name` 一致的 `or` 寫法。
+
+### 新增
+- `tests/test_app_reply.py`：**`src/app.py` 從零建立測試覆蓋**，10 個情境 296 行。
+
+### 清償前次審查的阻擋項
+`review_20260830_2302.md` 阻擋項 001 要求三道護欄，實際只有 `call_count` 一道。
+以**決定性實驗**證明 001 仍成立——把 `app.py` 暫時改回舊的 `.get(key, default)` 寫法，
+測試仍 1 passed（假綠燈）。原因是頂層 `except` 分支同樣只推**一則**訊息
+（「系統忙碌中」），`call_count == 1` 依然成立，抓不到這個失效模式。
+
+補上 `len(messages) == 2` 與 `messages[1]` 為 `FlexMessage` 兩道護欄後重跑同一實驗：
+正確的 `app.py` → 1 passed；還原成舊寫法 → **1 failed**（`assert 1 == 2`）。
+驗證迴圈至此閉合，測試能分辨走的是正式路徑或 except 分支。實驗後工作區已完整還原
+（`app.py` sha256 與實驗前一致）。
+
+### 驗證
+- pre-commit 三關通過：機密掃描 → pytest **246 passed** → `e2e_test.py` 四情境全過
+- 新增行 0 行超過 88 字元
+- 旁證確認：`exclude_recent` 的 `keep_at_least=3` 與註解「排除後不足 3 間則自動放棄排除」
+  相符，非空泛敘述
+
+### 上線
+commit `fcb5201`，merge `34b7cd7`（PR #23），CI/CD success。
+正式環境 revision **`ramen-bot-00090-hlx` → `ramen-bot-00091-qhf`**，100% 流量。
+部署後確認 `cpu-throttling=false`、`maxScale=3`、`minScale` 仍為 0。
+
+### 實機驗證（2026-09-12 補測）
+合併當下未實機驗證，於 `review_20260906_1945.md` 第八節列為後續事項。6 天後由使用者
+在 LINE 補測三項，**全數通過**：
+
+| 驗證項 | 對應改動 | 結果 |
+| :--- | :--- | :--- |
+| Info Bubble 正常顯示 | `alt_text` 改用 `or` 寫法 | ✅（截圖佐證） |
+| 定位推薦連續兩次不重複 | `filter_by_location(..., user_id=)` | ✅ |
+| 沾麵推薦不出現海外店家 | `_OVERSEAS_PATTERN`（2026-08-30） | ✅ |
+
+截圖直接證明的是 **Bubble 本體與正式回覆路徑正常**，亦即走的不是頂層 `except` 的
+「系統忙碌中」分支——正是上述兩道新護欄要守的失效模式。`alt_text` 字串本身顯示在
+LINE 的推播通知橫幅與聊天列表預覽、不在 Bubble 內，未被截圖直接涵蓋，其正確性
+仍由單元測試守住。
+
+`line_api` 計數修正無法由實機對話驗證（計數在 Firestore 配額文件內），仍待 log 比對。
+
+### 回退
+```
+git revert -m 1 34b7cd7 && git push origin main
+```
