@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+    # 僅根目錄文件（README / ARCHITECTURE / DEVELOP_HISTORY）變更時不部署。
+    # 刻意用 '*.md' 而非 '**.md'：只比對根目錄，避免日後子目錄的 .md
+    # （例如 knowledge/ 若納入版控）被默默跳過部署。
+    # 同一次 push 只要含任一非忽略檔案，仍會照常部署。
+    paths-ignore:
+      - '*.md'
 
 env:
   PROJECT_ID: gen-lang-client-0685910295
