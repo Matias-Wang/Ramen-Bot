@@ -200,7 +200,7 @@ LINE 伺服器要求 Webhook 必須在 1 秒內回應。本系統以雙層策略
 - **預處理機制**：透過 `scripts/build_new_shops.py` 離線完成 IG 數據採集與座標化，確保查詢時不需即時等待；若有店家因人工新增或 Pipeline 中斷而缺少座標，可額外執行 `data/geocode_shops.py` 補齊，不影響已有座標的店家。
 
 ### Webhook 事件特徵擴充（v1 已完成）
-> 對應 `line_response_usage.md` 第一階段（內容已併入本文件後刪除原檔）；第二、三階段（多模態事件、SLM 微調）列為後續優化項目，詳見 `PENDING.md`。
+> 對應 `line_response_usage.md` 第一階段（內容已併入本文件後刪除原檔）；第二階段（多模態事件）列為後續優化項目，詳見 `PENDING.md`。
 
 - **訊息去重 (`event.message.id`)**：`src/core/message_dedup.py` 的 `is_duplicate_message()` 在 `handle_message` 啟動背景執行緒前檢查，重複請求直接跳過（仍回 200），避免 LINE webhook 重送導致 Gemini 被重複觸發計費。本地：記憶體 `set`；生產：Firestore `processed_message_ids` collection（雙路徑判斷邏輯同 `DATA_BACKEND`）。
 - **避免重複推薦 (`src/core/recent_shops.py`)**：記錄每位使用者最近一次被推薦的店家，
