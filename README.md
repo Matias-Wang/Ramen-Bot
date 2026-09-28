@@ -190,6 +190,15 @@ python src/app.py
 # 輸入提問後，結果輸出至 temp.json
 ```
 
+### UI 測試台（模擬 LINE 對話）
+以 Streamlit 網頁模擬使用者在 LINE 上傳文字、分享位置，並顯示 Flex 回覆與除錯面板。
+測試資料寫入 `test_` 前綴集合，不影響正式日誌與配額。
+```bash
+pip install -r requirements-dev.txt
+streamlit run scripts/test_ui.py
+```
+完整操作步驟與測試案例見 [`UI_TESTING.md`](UI_TESTING.md)。
+
 ### 需要準備的資料
 - `data/ramen_data.json`：本地拉麵店資料（可透過 `build_new_shops.py` + `append_new_shops.py` 生成）
 - LINE Channel Token + Secret

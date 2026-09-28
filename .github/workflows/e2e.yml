@@ -1,0 +1,91 @@
+name: E2E Test
+
+# 真實呼叫 Gemini / Google Maps / Firestore 的端到端測試（scripts/e2e_test.py）。
+# - PR 到 main：自動跑輕量模式（每個 Skill 情境 1 題），合併前即可看到結果。
+# - 手動執行：可勾選 full 跑完整題庫。
+# 與 deploy.yml 獨立，不作為部署關卡（Gemini 偶發 503 不應擋住部署）。
+#
+# 測試流量隔離：e2e_test.py 會設定 E2E_TEST_MODE=1 →
+#   每日配額不計入；對話日誌與回報寫入 test_conversation_logs /
+#   test_feedback_reports，不混入正式資料。
+# ⚠️ 例外：店家推薦文快取（search_ai_summary / info_ai_summary）與圖片網址
+#   仍會寫回正式 ramen_shops。PR 分支若改壞了摘要生成邏輯，合併前就可能
+#   寫入錯誤內容；修改 Search_skill 摘要相關程式時請特別留意。
+on:
+  pull_request:
+    branches:
+      - main
+    # 與 deploy.yml 相同：僅根目錄文件變更時不跑
+    paths-ignore:
+      - '*.md'
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "跑完整題庫（--full）"
+        type: boolean
+        default: false
+
+# 同一個 PR 連續 push 時取消舊的執行，避免重複消耗 API
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: gen-lang-client-0685910295
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  e2e:
+    name: E2E (Firestore backend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -r requirements.txt
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      # 金鑰沿用 Cloud Run 使用的 Secret Manager，不在 GitHub 另存一份
+      - name: Load API keys from Secret Manager
+        id: secrets
+        uses: google-github-actions/get-secretmanager-secrets@v2
+        with:
+          secrets: |-
+            GEMINI_API_KEY:${{ env.PROJECT_ID }}/GEMINI_API_KEY
+            GOOGLE_MAPS_API_KEY:${{ env.PROJECT_ID }}/GOOGLE_MAPS_API_KEY
+
+      - name: Run E2E test
+        env:
+          DATA_BACKEND: firestore
+          GOOGLE_CLOUD_PROJECT_ID: ${{ env.PROJECT_ID }}
+          FIRESTORE_DATABASE: ramendata
+          GEMINI_MODEL: gemini-2.5-flash
+          GEMINI_API_KEY: ${{ steps.secrets.outputs.GEMINI_API_KEY }}
+          GOOGLE_MAPS_API_KEY: ${{ steps.secrets.outputs.GOOGLE_MAPS_API_KEY }}
+          PYTHONUTF8: "1"
+        run: python scripts/e2e_test.py ${{ inputs.full && '--full' || '' }}
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: log/e2e_test_*.md
+          if-no-files-found: ignore

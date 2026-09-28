@@ -1,0 +1,2 @@
+# Git hook 為 sh 腳本，CRLF 會使其在其他 Windows 機器上執行失敗
+.githooks/* text eol=lf
