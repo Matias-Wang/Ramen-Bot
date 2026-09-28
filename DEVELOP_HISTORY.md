@@ -1177,3 +1177,49 @@ git revert -m 1 34b7cd7 && git push origin main
 - `檔案說明.md` 的 `SLM/` 列、`.gitignore` 的 `SLM/` 規則、`ARCHITECTURE.md` 的「SLM 微調」階段描述
 
 歷史紀錄（本檔 2026-08-30 條目、`review_20260830_1034.md`）中的 SLM 提及刻意保留。
+
+## 2026-09-28 — 本地 LINE 模擬測試台、測試流量隔離與 E2E CI
+
+### 新增
+- `scripts/test_ui.py`（Streamlit）：在本機模擬使用者傳文字、分享位置，執行正式環境
+  同一段回覆流程（`app.py` 的 `_reply_to_line` / `_reply_location`），只攔截 LINE 推播
+  改顯示於網頁；附 Flex JSON 檢視 / 一鍵複製、意圖與參數、摘要快取命中、耗時面板。
+  **刻意不在 `app.py` 開免簽章的 `/test/webhook` 路由**——`Dockerfile` 為 `COPY . .`，
+  該路由會隨映像檔上線成為任何人都能觸發計費的入口。操作說明見 `UI_TESTING.md`。
+- `.github/workflows/e2e.yml`：PR 到 main 自動跑 `e2e_test.py` 輕量模式，另可手動跑
+  完整題庫；沿用既有 WIF 認證，金鑰由 Secret Manager 讀取。**不作部署關卡**
+  （Gemini 偶發 503 不應擋部署）。首次實跑 58 秒通過（PR #27）。
+- `requirements-dev.txt`（`-r requirements.txt` + `streamlit`），生產映像檔不安裝。
+- `UI_TESTING.md` 測試手冊；README「使用方式」加入連結。
+
+### 修改
+- **測試流量隔離**：新增 `services.firestore_client.collection_name()`，
+  `E2E_TEST_MODE=1` 時 `conversation_logs` / `feedback_reports` 改寫
+  `test_conversation_logs` / `test_feedback_reports`。沿用既有配額豁免旗標，一個開關
+  同時決定配額與日誌去向。Cloud Run 未設此旗標，正式行為不變。
+  - 動機：`conversation_logs` 無 `user_id` 欄位，測試流量一旦寫入就與真實使用者
+    無法區分，會污染 `analyze_conversations.py` 的分析。
+  - 不隔離：店家 `search_ai_summary` / `info_ai_summary` 快取與圖片網址（屬店家資料本身）。
+- `scripts/e2e_test.py` 不再依賴不進版控的本機資料（店家改經 `_load_all_shops()`、
+  回報清理依後端分流），`DATA_BACKEND=firestore` 即可在 CI 或其他設備執行。
+- **`scripts/` 納入版控**（供團隊與跨設備協作），僅排除一次性觀測的
+  `check_image_url_lifetime.py` 與功能重疊的 `export_feedback_reports.py`。
+  `.dockerignore` 同步排除整個 `scripts/`、`.githooks/`、`.github/`。
+- pre-commit hook 由 `.git/hooks/`（不進版控）移至 `.githooks/`，`.gitattributes` 固定 LF；
+  clone 後需執行 `git config core.hooksPath .githooks`。
+- `migrate_knowledge_to_firestore.py` 由已棄用且不在 requirements 的
+  `google.generativeai` 改為 `google-genai`（2026-05-23 SDK 遷移時遺漏此腳本）。
+- GCP：`github-actions-sa` 新增 `roles/datastore.user` 與僅限 `GEMINI_API_KEY`、
+  `GOOGLE_MAPS_API_KEY` 兩個 secret 的 `secretAccessor`（LINE 憑證不開放）。
+
+### 驗證
+- pytest **252 passed**（新增 6 項隔離測試）；pre-commit 三關通過
+- `e2e_test.py` local 與 Firestore 兩種後端皆全過；Firestore 模式日誌全數進 `test_` 集合、
+  正式集合 0 筆；GitHub Actions 實跑同樣確認寫入 `test_conversation_logs`
+- Reviewer PASSED（`review_20260928_1849.md`，10 項非阻擋建議修 8 項）
+
+### 上線
+commit `17b9c27`，merge `b0f715c`（PR #27），CI/CD success。
+
+### 清理
+開發驗證期間寫入正式 `conversation_logs` 的 2 筆測試資料，經使用者確認後刪除。
