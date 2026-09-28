@@ -32,6 +32,29 @@ def get_db() -> "firestore.Client":
     return _db
 
 
+def collection_name(name: str) -> str:
+    """
+    回傳日誌類集合的實際名稱：測試流量（E2E_TEST_MODE=1）加上 `test_` 前綴。
+
+    供 conversation_logs、feedback_reports 使用，讓 scripts/test_ui.py、
+    scripts/e2e_test.py 等測試寫入獨立集合，不混入正式使用者資料。
+    正式環境（Cloud Run）未設定此旗標，行為不變。
+
+    Parameters
+    ----------
+    name : str
+        正式集合名稱。
+
+    Returns
+    -------
+    str
+        測試模式為 `test_<name>`，否則為原名稱。
+    """
+    if os.getenv("E2E_TEST_MODE") == "1":
+        return f"test_{name}"
+    return name
+
+
 def _run_heartbeat(interval_sec: int) -> None:
     """背景心跳：每隔 interval_sec 秒讀一次 config/daily_usage 的 date 欄位，
     讓 gRPC 連線保持活躍，避免網路中間件在閒置後靜默關閉連線（約 2-3 分鐘超時）。"""

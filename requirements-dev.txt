@@ -1,0 +1,3 @@
+# 本地開發 / 測試用依賴，不進生產 image（Dockerfile 只安裝 requirements.txt）
+-r requirements.txt
+streamlit==1.64.0

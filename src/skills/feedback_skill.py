@@ -59,9 +59,11 @@ def collect_report(
     }
     try:
         if USE_FIRESTORE:
-            from services.firestore_client import get_db
+            from services.firestore_client import collection_name, get_db
             db = get_db()
-            db.collection(FIRESTORE_COLLECTION).document(report["id"]).set(report)
+            db.collection(collection_name(FIRESTORE_COLLECTION)).document(
+                report["id"]
+            ).set(report)
         else:
             _append_to_local(report)
         print(
@@ -108,10 +110,10 @@ def check_pending_reports() -> list[dict]:
         if USE_FIRESTORE:
             from google.cloud.firestore_v1.base_query import FieldFilter
 
-            from services.firestore_client import get_db
+            from services.firestore_client import collection_name, get_db
             db = get_db()
             docs = (
-                db.collection(FIRESTORE_COLLECTION)
+                db.collection(collection_name(FIRESTORE_COLLECTION))
                 .where(filter=FieldFilter("status", "==", "pending"))
                 .stream()
             )

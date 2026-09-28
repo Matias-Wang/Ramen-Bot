@@ -15,6 +15,15 @@ __pycache__/
 
 # 測試，不需在生產環境執行
 tests/
+# 離線 / 維運 / 測試腳本（含會繞過 LINE 簽章的測試介面、會寫入正式 Firestore
+# 的資料工具）。scripts/ 已納入版控，CI 的 COPY . . 會帶入，必須整個排除；
+# src/ 不匯入 scripts/ 內任何模組。
+scripts/
+# 開發流程設定，執行期不需要
+.githooks/
+.github/
+# 開發用依賴清單（含 streamlit），生產映像檔只安裝 requirements.txt
+requirements-dev.txt
 
 # 本地資料層（Cloud Run 使用 Firestore，不需要這些）
 data/

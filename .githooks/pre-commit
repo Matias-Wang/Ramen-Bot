@@ -1,0 +1,42 @@
+#!/bin/sh
+# Pre-commit hook：先掃描 staged 內容有無機密（scripts/check_secrets.py），
+# 再跑 pytest（單元測試，全 mock，不耗 API 配額），
+# 再跑 scripts/e2e_test.py 輕量模式（每個 Skill 情境隨機抽 1 題，
+# 真實呼叫 Gemini／Google Maps API，但已透過 E2E_TEST_MODE 排除於
+# core/usage_tracker.py 的每日配額計算之外）。
+# 任一階段失敗都會阻止 commit；需要跳過時可用 git commit --no-verify。
+#
+# 本檔納入版控（.githooks/）。clone 後執行一次即可啟用：
+#   git config core.hooksPath .githooks
+
+# Windows 終端機預設 cp950 codepage，腳本印出的中文（例如「歸」）無法編碼會拋
+# UnicodeEncodeError 中斷該情境的測試（實測 e2e Info Skill 情境因此被跳過驗證）。
+# 強制 Python 以 UTF-8 輸出即可根治。
+export PYTHONUTF8=1
+
+# 機密掃描（排在最前面：耗時不到 1 秒，且失敗代價最高——機密一旦進入 commit，
+# 之後刪檔也無法從歷史中移除。2026-03-07 的 .env 外洩即為此，起因是 .gitnore
+# 檔名拼錯導致 ignore 規則從未生效）。
+# 實際邏輯放在版控內的 scripts/check_secrets.py，避免重新 clone 後遺失。
+echo "[pre-commit] 執行機密掃描..."
+python scripts/check_secrets.py
+if [ $? -ne 0 ]; then
+    exit 1
+fi
+
+echo "[pre-commit] 執行 pytest..."
+python -m pytest tests/ -q
+if [ $? -ne 0 ]; then
+    echo "[pre-commit] pytest 失敗，已阻止 commit。"
+    exit 1
+fi
+
+echo "[pre-commit] 執行端到端測試（輕量模式，每情境抽 1 題）..."
+python scripts/e2e_test.py
+if [ $? -ne 0 ]; then
+    echo "[pre-commit] e2e_test.py 發現問題，已阻止 commit。詳見 log/e2e_test_*.md"
+    exit 1
+fi
+
+echo "[pre-commit] 全部通過。"
+exit 0

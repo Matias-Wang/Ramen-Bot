@@ -83,11 +83,12 @@ def _write_to_firestore(record: dict) -> None:
     record : dict
         已組裝完成的對話特徵紀錄。
     """
-    print(f"{GREEN}STEP: 寫入對話日誌至 Firestore conversation_logs{RESET}")
     try:
-        from services.firestore_client import get_db
+        from services.firestore_client import collection_name, get_db
 
+        collection = collection_name(FIRESTORE_COLLECTION)
+        print(f"{GREEN}STEP: 寫入對話日誌至 Firestore {collection}{RESET}")
         db = get_db()
-        db.collection(FIRESTORE_COLLECTION).add(record)
+        db.collection(collection).add(record)
     except Exception as e:
         print(f"{RED}STEP ERROR:{e}{RESET}")
