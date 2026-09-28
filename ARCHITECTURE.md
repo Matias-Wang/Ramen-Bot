@@ -235,7 +235,8 @@ AgentRouter 解析完意圖後埋點：
   在 STEP 3 完成、回傳前呼叫（STEP 1 例外的 FALLBACK 路徑不埋點）。
 - **非阻塞**：僅在 `DATA_BACKEND=firestore` 生效，以 fire-and-forget daemon thread 寫入
   Firestore `conversation_logs`，不增加 dispatch 延遲；寫入失敗只印錯誤、不影響 LINE 回覆。
-  本地終端模式為 no-op。
+  本地終端模式為 no-op。測試流量（`E2E_TEST_MODE=1`）改寫 `test_conversation_logs`，
+  見下方「測試流量隔離」。
 - **紀錄 schema**：`{timestamp（台北時間）, user_input, predicted_skill, args}`，`predicted_skill`
   由 intent 映射為可讀 skill 名，`args` 為意圖字典去除 `intent`/`ui_tag`。
 - **地端同步**：`scripts/fetch_cloud_data.py` 把 `conversation_logs` → `data_logs/tracking_conversations.jsonl`、
@@ -316,6 +317,27 @@ push_message 送出回覆
 
 **Firestore Client Singleton**：`src/services/firestore_client.py` 提供全域單一 `firestore.Client` 實例（`get_db()`），所有模組共用同一 gRPC 連線，避免每次請求重新建立連線的高延遲（每次建立需 5-30 秒）。
 
+### 測試流量隔離（E2E_TEST_MODE）
+本地測試台（`scripts/test_ui.py`）、`scripts/e2e_test.py` 與 GitHub Actions E2E 都連正式
+Firestore。為避免測試資料混入正式資料，以單一旗標 `E2E_TEST_MODE=1` 標記測試流量：
+
+| 資料 | 正式流量 | 測試流量 |
+|------|---------|---------|
+| 對話日誌 | `conversation_logs` | `test_conversation_logs` |
+| 錯誤回報 | `feedback_reports` | `test_feedback_reports` |
+| 每日配額（`usage_tracker`） | 計入 | 不計入 |
+| 店家摘要快取、圖片網址（`ramen_shops`） | 寫回 | **同樣寫回**（屬店家資料本身，由誰觸發皆有效） |
+
+- **實作**：`services/firestore_client.collection_name(name)` 在旗標開啟時回傳 `test_<name>`；
+  `conversation_logger`、`feedback_skill` 讀寫集合一律經此函式。旗標於呼叫當下讀取。
+- **正式環境不設此旗標**，行為不變。
+- **必要性**：`conversation_logs` 不含 `user_id`，測試資料一旦寫入就無法與真實使用者區分，
+  會污染 `analyze_conversations.py` 的分析。
+- **本地測試台不在 `app.py` 開測試路由**：改為同行程 import `app` 並替換 `line_bot_api`
+  攔截推播。`Dockerfile` 為 `COPY . .`，任何繞過 `X-Line-Signature` 的路由都會隨映像檔上線。
+  `.dockerignore` 排除整個 `scripts/`。操作說明見 `UI_TESTING.md`。
+- `test_` 集合目前無 TTL，會隨測試累積（量極小，不影響正式服務）。
+
 ---
 
 ## 技術棧 (Tech Stack)
@@ -333,6 +355,7 @@ push_message 送出回覆
 | Embedding | Google `gemini-embedding-001`（768 維） | 同左 |
 | 密鑰管理 | `.env` | GCP Secret Manager |
 | 部署流程 | 手動啟動 | GitHub Actions（push to main → Build → Artifact Registry → Cloud Run） |
+| 測試 | pytest + pre-commit（`.githooks/`）+ Streamlit 測試台 | GitHub Actions E2E（PR 到 main，Firestore 後端，不作部署關卡） |
 | 非同步 | `threading.ThreadPoolExecutor`（推薦文並行）+ `threading`（Webhook 非阻塞） | 同左 |
 
 ---
@@ -363,24 +386,37 @@ Ramen-Bot/
 │       ├── google_maps.py       # Google Maps API 統一封裝
 │       └── firestore_client.py  # Firestore Client Singleton（全域共用連線）
 ├── Dockerfile              # Cloud Run 容器化設定（gunicorn，WORKDIR /app/src）
-├── .dockerignore           # 排除 .env / data/ / log/ / .chroma_db/ 等
+├── .dockerignore           # 排除 .env / data/ / log/ / .chroma_db/ / scripts/ / .github/ 等
 ├── pytest.ini              # pytest 設定（pythonpath = src）
-├── requirements.txt        # 依賴套件清單
+├── requirements.txt        # 依賴套件清單（生產）
+├── requirements-dev.txt    # 開發依賴（-r requirements.txt + streamlit），不進映像檔
+├── UI_TESTING.md           # 本地 UI 測試台操作手冊
+├── .githooks/
+│   └── pre-commit          # 機密掃描 → pytest → e2e_test（clone 後執行 git config core.hooksPath .githooks）
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml      # CI/CD：push to main → Build → Artifact Registry → Cloud Run
-├── scripts/
+│       ├── deploy.yml      # CI/CD：push to main → Build → Artifact Registry → Cloud Run
+│       └── e2e.yml         # PR 到 main / 手動：e2e_test.py（Firestore 後端，測試流量隔離）
+├── scripts/                # 納入版控（check_image_url_lifetime、export_feedback_reports 除外）；不進映像檔
+│   ├── test_ui.py                        # 本地 LINE 模擬測試台（Streamlit，見 UI_TESTING.md）
+│   ├── e2e_test.py                       # 四個 Skill 端到端測試（pre-commit / CI 使用）
+│   ├── check_secrets.py                  # commit 前機密掃描
 │   ├── build_new_shops.py                # 資料清洗 Pipeline（data/resource/ IG 匯出包 → LLM → Maps → 候選 JSON）
+│   ├── append_new_shops.py               # 將 build_new_shops.py 產出的候選清單附加至 ramen_data.json（不比對重複）
+│   ├── check_description_shop_match.py   # 稽核 description 與店名是否錯置
 │   ├── update_api_data.py                # 批次補全店家 place_id（支援 --dry-run）
+│   ├── generate_ai_summaries.py          # 批次預生成 search_ai_summary / info_ai_summary
 │   ├── migrate_to_firestore.py           # 店家資料匯入/同步 Firestore（import / sync 模式）
 │   ├── migrate_knowledge_to_firestore.py # 知識庫向量索引寫入 Firestore（支援 --force）
+│   ├── fetch_cloud_data.py               # 地端同步：雲端 conversation_logs / feedback_reports → data_logs/
+│   ├── analyze_conversations.py          # 對話日誌分析（意圖分布、熱門查詢、資料盲區）
 │   ├── setup_secrets.ps1                 # 從 .env 一鍵上傳金鑰至 Secret Manager
-│   ├── append_new_shops.py               # 將 build_new_shops.py 產出的候選清單附加至 ramen_data.json（不比對重複）
-│   └── fetch_cloud_data.py               # 地端同步：雲端 conversation_logs / feedback_reports → data_logs/
+│   └── setup_github_actions.ps1          # GitHub Actions WIF 與服務帳號權限設定
 ├── tests/
 │   ├── test_search_skill.py    # Haversine 距離計算、店家摘要建構
 │   ├── test_flex_handler.py    # Bubble 生成、Carousel 組裝
-│   └── test_usage_tracker.py   # 配額檢查、日期重置、Token 累加
+│   ├── test_usage_tracker.py   # 配額檢查、日期重置、Token 累加
+│   └── test_test_traffic_isolation.py  # 測試流量寫入 test_ 集合
 ├── data/
 │   ├── ramen_data.json             # 主資料庫（本地開發 / 遷移來源）
 │   ├── ramen_data_template.json    # 欄位格式範本
