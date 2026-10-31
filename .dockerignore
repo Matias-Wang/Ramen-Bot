@@ -36,3 +36,6 @@ temp.json
 PROGRESS.md
 backup/
 review/
+
+# 本機專用金鑰，絕對不進 image
+.local-secrets/
