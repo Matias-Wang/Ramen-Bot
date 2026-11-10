@@ -161,6 +161,10 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+> **換電腦／跨作業系統時**：`.venv` 綁定建立時的作業系統與 Python 路徑，請勿直接複製，
+> 需在新機器上以 `uv venv --python 3.13.11` 重建後重新安裝依賴。clone 後另需執行
+> `git config core.hooksPath .githooks` 啟用 pre-commit hook。
+
 ### 需要的環境變數
 建立 `.env` 檔案，並填入：
 ```env

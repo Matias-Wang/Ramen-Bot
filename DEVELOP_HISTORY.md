@@ -1223,3 +1223,24 @@ commit `17b9c27`，merge `b0f715c`（PR #27），CI/CD success。
 
 ### 清理
 開發驗證期間寫入正式 `conversation_logs` 的 2 筆測試資料，經使用者確認後刪除。
+
+---
+
+## 2026-11-10 — 換電腦（Windows → macOS）環境修復
+
+### 修正
+- **`.venv` 無法使用**：自 Windows 直接複製的 `.venv`（`home = C:\...`、僅有 `Scripts/`）
+  在 macOS 無法執行。安裝 uv，以 Python 3.13.11 重建並重新安裝 `requirements-dev.txt`。
+- **54 個檔案被標為已修改**：工作區被轉為 CRLF，內容無差異（`git diff --ignore-cr-at-eol` 為空），
+  還原為 repo 版本。`.gitattributes` 新增 `* text=auto eol=lf`，所有文字檔一律以 LF 檢出（PR #29）。
+- **pre-commit hook 失效**：檔案遺失執行權限，且沿用自 Windows 的 `core.fileMode=false`
+  使 git 未察覺；補回權限並改為 `true`。hook 原以裸 `python` 呼叫，macOS 未 activate venv 時
+  找不到指令而擋下 commit，改為依序偵測 `.venv/bin/python` → `.venv/Scripts/python.exe`
+  → PATH 上的 `python`（PR #30）。
+- 刪除專案內誤建的巢狀重複 clone `Ramen-Bot/`（僅含一個未推送的空 commit）。
+- 本機安裝 `gh`、`gcloud`，供部署與 log 檢查。
+
+### 驗證
+- pytest **252 passed**；`e2e_test.py` 全部自動檢查通過；以不含 `python` 的 PATH commit，hook 三關皆通過
+- 正式環境：Cloud Run `ramen-bot-00096-qfj` 承接 100% 流量，14 天內無 ERROR；
+  LINE webhook 測試成功（冷啟動約 13.6s，屬 `min-instances=0` 既定取捨）
