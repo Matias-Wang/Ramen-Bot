@@ -14,25 +14,36 @@
 # 強制 Python 以 UTF-8 輸出即可根治。
 export PYTHONUTF8=1
 
+# 優先使用專案 .venv 的 Python（macOS/Linux 為 bin/python，Windows 為
+# Scripts/python.exe），避免未 activate venv 時（例如從 VS Code 原始檔控制面板
+# commit）找不到 python 或誤用系統 Python 而缺少依賴。皆不存在時退回 PATH 上的 python。
+if [ -x .venv/bin/python ]; then
+    PY=.venv/bin/python
+elif [ -x .venv/Scripts/python.exe ]; then
+    PY=.venv/Scripts/python.exe
+else
+    PY=python
+fi
+
 # 機密掃描（排在最前面：耗時不到 1 秒，且失敗代價最高——機密一旦進入 commit，
 # 之後刪檔也無法從歷史中移除。2026-03-07 的 .env 外洩即為此，起因是 .gitnore
 # 檔名拼錯導致 ignore 規則從未生效）。
 # 實際邏輯放在版控內的 scripts/check_secrets.py，避免重新 clone 後遺失。
 echo "[pre-commit] 執行機密掃描..."
-python scripts/check_secrets.py
+"$PY" scripts/check_secrets.py
 if [ $? -ne 0 ]; then
     exit 1
 fi
 
 echo "[pre-commit] 執行 pytest..."
-python -m pytest tests/ -q
+"$PY" -m pytest tests/ -q
 if [ $? -ne 0 ]; then
     echo "[pre-commit] pytest 失敗，已阻止 commit。"
     exit 1
 fi
 
 echo "[pre-commit] 執行端到端測試（輕量模式，每情境抽 1 題）..."
-python scripts/e2e_test.py
+"$PY" scripts/e2e_test.py
 if [ $? -ne 0 ]; then
     echo "[pre-commit] e2e_test.py 發現問題，已阻止 commit。詳見 log/e2e_test_*.md"
     exit 1
