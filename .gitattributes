@@ -1,2 +1,5 @@
+# 所有文字檔一律以 LF 檢出，避免跨 Windows/macOS 換電腦時整批檔案被標為已修改
+* text=auto eol=lf
+
 # Git hook 為 sh 腳本，CRLF 會使其在其他 Windows 機器上執行失敗
 .githooks/* text eol=lf
